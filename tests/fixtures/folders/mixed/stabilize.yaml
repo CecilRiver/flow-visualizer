@@ -1,0 +1,1252 @@
+schema_version: "0.1"
+
+model:
+  id: "arducopter.stabilize.v0_1"
+  title: "ArduCopter Stabilize L0-L2 业务流程"
+  description: "多旋翼 Matrix 机架下，驾驶员 RC 输入经 Stabilize、姿态/角速度控制和电机混控到执行器输出的证据化业务数据流。"
+  vehicle: "ArduCopter"
+  source_revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+  generated_on: "2026-09-22"
+  language: "zh-CN"
+  review_status: "evidence_checked"
+  scope:
+    levels: [0, 1, 2]
+    frame_profile: "multirotor_matrix"
+    includes:
+      - "Stabilize 模式的正常稳态控制路径"
+      - "RC 输入、飞行模式分派、姿态状态估计、姿态/角速度控制、电机混控和执行器输出"
+      - "电机饱和限制对角速度 PID 的反馈"
+    excludes:
+      - "传统直升机、Single、Coax、Tailsitter 等不同输出实现"
+      - "Radio/EKF Failsafe 的动作决策；它属于后续 Failsafe 场景"
+      - "具体接收机协议、IMU 驱动、HAL 和板级执行器驱动"
+      - "函数级 L3 节点和语句级调用图"
+    assumptions:
+      - "当前飞行模式已经成功切换为 STABILIZE。"
+      - "使用 AP_MotorsMatrix 类多旋翼机架实现作为混控证据。"
+      - "数据流表示稳态语义依赖，不表示同一次主循环内严格从左到右执行。"
+      - "速率控制和电机输出会为降低陀螺采样延迟而在调度表中先于姿态目标更新执行。"
+
+sources:
+  - id: "source.code.copter_scheduler"
+    kind: "source_code"
+    title: "Copter 主调度表"
+    path: "ArduCopter/Copter.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "Copter::scheduler_tasks"
+    line_start: 113
+    line_end: 151
+
+  - id: "source.code.rc_loop"
+    kind: "source_code"
+    title: "RC 周期入口"
+    path: "ArduCopter/Copter.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "Copter::rc_loop"
+    line_start: 583
+    line_end: 591
+
+  - id: "source.code.read_radio"
+    kind: "source_code"
+    title: "读取并更新 RC 输入"
+    path: "ArduCopter/radio.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "Copter::read_radio"
+    line_start: 92
+    line_end: 120
+
+  - id: "source.code.mode_switch"
+    kind: "source_code"
+    title: "Copter 模式开关处理"
+    path: "ArduCopter/RC_Channel_Copter.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "RC_Channel_Copter::mode_switch_changed"
+    line_start: 17
+    line_end: 38
+
+  - id: "source.code.mode_dispatch"
+    kind: "source_code"
+    title: "当前飞行模式分派"
+    path: "ArduCopter/mode.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "Copter::update_flight_mode"
+    line_start: 500
+    line_end: 513
+
+  - id: "source.code.stabilize_run"
+    kind: "source_code"
+    title: "Stabilize 主控制行为"
+    path: "ArduCopter/mode_stabilize.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "ModeStabilize::run"
+    line_start: 7
+    line_end: 61
+
+  - id: "source.code.pilot_lean"
+    kind: "source_code"
+    title: "驾驶员 Roll/Pitch 到倾角目标的转换"
+    path: "ArduCopter/mode.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "Mode::get_pilot_desired_lean_angles_rad"
+    line_start: 555
+    line_end: 575
+
+  - id: "source.code.pilot_throttle"
+    kind: "source_code"
+    title: "驾驶员油门目标转换"
+    path: "ArduCopter/mode.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "Mode::get_pilot_desired_throttle"
+    line_start: 974
+    line_end: 1003
+
+  - id: "source.code.pilot_yaw"
+    kind: "source_code"
+    title: "驾驶员 Yaw 到偏航速率目标的转换"
+    path: "ArduCopter/mode.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "Mode::get_pilot_desired_yaw_rate_rads"
+    line_start: 1073
+    line_end: 1086
+
+  - id: "source.code.ahrs_update"
+    kind: "source_code"
+    title: "AHRS 状态估计更新"
+    path: "ArduCopter/Copter.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "Copter::read_AHRS"
+    line_start: 880
+    line_end: 884
+
+  - id: "source.code.attitude_input"
+    kind: "source_code"
+    title: "姿态目标输入与目标整形"
+    path: "libraries/AC_AttitudeControl/AC_AttitudeControl.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "AC_AttitudeControl::input_euler_angle_roll_pitch_euler_rate_yaw_rad"
+    line_start: 399
+    line_end: 457
+
+  - id: "source.code.attitude_feedback"
+    kind: "source_code"
+    title: "姿态反馈与角速度目标计算"
+    path: "libraries/AC_AttitudeControl/AC_AttitudeControl.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "AC_AttitudeControl::attitude_controller_run_quat"
+    line_start: 988
+    line_end: 1029
+
+  - id: "source.code.rate_controller"
+    kind: "source_code"
+    title: "多旋翼角速度 PID 与轴控制量输出"
+    path: "libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "AC_AttitudeControl_Multi::rate_controller_run_dt"
+    line_start: 456
+    line_end: 490
+
+  - id: "source.code.throttle_output"
+    kind: "source_code"
+    title: "姿态控制器向 AP_Motors 设置油门"
+    path: "libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "AC_AttitudeControl_Multi::set_throttle_out"
+    line_start: 364
+    line_end: 378
+
+  - id: "source.code.motors_interface"
+    kind: "source_code"
+    title: "AP_Motors 轴输入与限制反馈接口"
+    path: "libraries/AP_Motors/AP_Motors_Class.h"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "AP_Motors"
+    line_start: 161
+    line_end: 242
+
+  - id: "source.code.motors_output_entry"
+    kind: "source_code"
+    title: "Copter 电机输出入口"
+    path: "ArduCopter/motors.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "Copter::motors_output"
+    line_start: 60
+    line_end: 118
+
+  - id: "source.code.multicopter_output"
+    kind: "source_code"
+    title: "多旋翼混控输出流程"
+    path: "libraries/AP_Motors/AP_MotorsMulticopter.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "AP_MotorsMulticopter::output"
+    line_start: 268
+    line_end: 299
+
+  - id: "source.code.matrix_mixing"
+    kind: "source_code"
+    title: "Matrix 机架 Roll/Pitch/Yaw/Throttle 混控"
+    path: "libraries/AP_Motors/AP_MotorsMatrix.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "AP_MotorsMatrix::output_armed_stabilizing"
+    line_start: 211
+
+  - id: "source.code.matrix_output"
+    kind: "source_code"
+    title: "Matrix 每电机执行量到输出通道命令"
+    path: "libraries/AP_Motors/AP_MotorsMatrix.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "AP_MotorsMatrix::output_to_motors"
+    line_start: 143
+    line_end: 183
+
+  - id: "source.code.motor_channel_write"
+    kind: "source_code"
+    title: "电机输出写入 SRV 通道"
+    path: "libraries/AP_Motors/AP_Motors_Class.cpp"
+    revision: "63ac2d68f2296252d1aeda58a10c219da7edcc7b"
+    symbol: "AP_Motors::rc_write"
+    line_start: 93
+    line_end: 105
+
+  - id: "source.wiki.stabilize"
+    kind: "wiki"
+    title: "Stabilize Mode"
+    url: "https://ardupilot.org/copter/docs/stabilize-mode.html"
+    section: "Overview"
+    retrieved_on: "2026-09-22"
+
+  - id: "source.wiki.attitude_control"
+    kind: "wiki"
+    title: "Copter Attitude Control"
+    url: "https://ardupilot.org/dev/docs/apmcopter-programming-attitude-control-2.html"
+    section: "Copter Attitude Control"
+    retrieved_on: "2026-09-22"
+
+  - id: "source.wiki.flight_modes"
+    kind: "wiki"
+    title: "Copter Flight Modes"
+    url: "https://ardupilot.org/copter/docs/flight-modes.html"
+    section: "Overview and GPS Dependency"
+    retrieved_on: "2026-09-22"
+
+data_contracts:
+  - id: "data.receiver_channel_samples"
+    name: "接收机通道采样"
+    description: "RC 接收链路提供的原始或已解码通道样本；具体协议和 HAL 表示留在外部边界。"
+    fields:
+      - name: "channels"
+        type: "object"
+        description: "Roll、Pitch、Throttle、Yaw 和模式开关等通道值。"
+      - name: "new_input"
+        type: "boolean"
+        description: "本次读取是否获得了新输入。"
+    evidence:
+      - source_id: "source.code.read_radio"
+        support: "direct"
+        claim: "read_radio 使用 rc().read_input() 判断是否收到新 RC 输入。"
+
+  - id: "data.pilot_control_input"
+    name: "驾驶员控制输入"
+    description: "RC 处理后供 Stabilize 使用的摇杆量、有效性与低油门状态。"
+    fields:
+      - name: "roll_norm"
+        type: "number"
+        description: "带死区处理的归一化 Roll 输入。"
+        unit: "1"
+        range: { minimum: -1.0, maximum: 1.0 }
+      - name: "pitch_norm"
+        type: "number"
+        description: "带死区处理的归一化 Pitch 输入。"
+        unit: "1"
+        range: { minimum: -1.0, maximum: 1.0 }
+      - name: "yaw_norm"
+        type: "number"
+        description: "带死区处理的归一化 Yaw 输入。"
+        unit: "1"
+        range: { minimum: -1.0, maximum: 1.0 }
+      - name: "throttle_control"
+        type: "integer"
+        description: "RC_Channel 产生的手动油门控制值。"
+        unit: "control_in"
+        range: { minimum: 0, maximum: 1000 }
+      - name: "input_valid"
+        type: "boolean"
+        description: "当前 RC 输入是否有效。"
+      - name: "throttle_zero"
+        type: "boolean"
+        description: "油门是否处于零输入状态。"
+    evidence:
+      - source_id: "source.code.read_radio"
+        support: "direct"
+        claim: "read_radio 更新 throttle failsafe、throttle_zero 和控制输入滤波状态。"
+      - source_id: "source.code.pilot_lean"
+        support: "direct"
+        claim: "Roll/Pitch 使用 norm_input_dz 获取归一化输入。"
+      - source_id: "source.code.pilot_yaw"
+        support: "direct"
+        claim: "Yaw 使用 norm_input_dz 获取归一化输入。"
+
+  - id: "data.flight_mode_selection"
+    name: "飞行模式选择"
+    description: "去抖后的模式开关位置所解析出的 Copter 飞行模式请求。"
+    fields:
+      - name: "requested_mode"
+        type: "enum"
+        description: "请求的飞行模式。"
+        values: ["STABILIZE"]
+      - name: "reason"
+        type: "enum"
+        description: "模式请求来源。"
+        values: ["RC_COMMAND"]
+    evidence:
+      - source_id: "source.code.mode_switch"
+        support: "direct"
+        claim: "模式开关位置映射到 flight_modes 参数并通过 RC_COMMAND 请求 set_mode。"
+
+  - id: "data.mode_execution_tick"
+    name: "当前模式执行触发"
+    description: "主循环对当前 flightmode 的周期性 run 调用。"
+    fields:
+      - name: "active_mode"
+        type: "enum"
+        description: "被执行的当前模式。"
+        values: ["STABILIZE"]
+      - name: "loop_dt"
+        type: "number"
+        description: "当前控制循环时间步长。"
+        unit: "s"
+    evidence:
+      - source_id: "source.code.mode_dispatch"
+        support: "direct"
+        claim: "update_flight_mode 调用 flightmode->run()。"
+
+  - id: "data.imu_sample"
+    name: "IMU 样本"
+    description: "由传感器边界提供并由 INS/AHRS 更新消费的惯性测量样本集合。"
+    fields:
+      - name: "gyro"
+        type: "vector3"
+        description: "机体系三轴角速度测量。"
+        unit: "rad/s"
+        frame: "body"
+      - name: "acceleration"
+        type: "vector3"
+        description: "机体系三轴加速度测量。"
+        unit: "m/s^2"
+        frame: "body"
+    evidence:
+      - source_id: "source.code.copter_scheduler"
+        support: "contextual"
+        claim: "调度表先更新 AP_InertialSensor，再运行速率控制和 AHRS。"
+
+  - id: "data.attitude_rate_state"
+    name: "姿态与角速度状态"
+    description: "姿态控制闭环消费的机体到 NED 姿态和最新陀螺角速度。"
+    fields:
+      - name: "body_to_ned"
+        type: "quaternion"
+        description: "机体系到 NED 的姿态四元数。"
+        frame: "body_to_ned"
+      - name: "gyro_latest"
+        type: "vector3"
+        description: "最新机体系角速度。"
+        unit: "rad/s"
+        frame: "body"
+    evidence:
+      - source_id: "source.code.attitude_feedback"
+        support: "direct"
+        claim: "姿态控制从 AHRS 读取 body-to-NED 四元数并使用最新 gyro。"
+      - source_id: "source.code.rate_controller"
+        support: "direct"
+        claim: "多旋翼速率控制器从 AHRS 获取最新 gyro。"
+
+  - id: "data.stabilize_target"
+    name: "Stabilize 姿态与油门目标"
+    description: "Stabilize 从驾驶员输入产生的 Roll/Pitch 角、Yaw 角速度和归一化油门目标。"
+    fields:
+      - name: "roll_target"
+        type: "number"
+        description: "目标滚转欧拉角。"
+        unit: "rad"
+        frame: "earth_euler"
+      - name: "pitch_target"
+        type: "number"
+        description: "目标俯仰欧拉角。"
+        unit: "rad"
+        frame: "earth_euler"
+      - name: "yaw_rate_target"
+        type: "number"
+        description: "目标偏航欧拉角速度。"
+        unit: "rad/s"
+        frame: "earth_euler"
+      - name: "throttle_target"
+        type: "number"
+        description: "经过 hover-centered expo 变换的手动油门目标。"
+        unit: "1"
+        range: { minimum: 0.0, maximum: 1.0 }
+    evidence:
+      - source_id: "source.code.stabilize_run"
+        support: "direct"
+        claim: "ModeStabilize::run 计算 Roll/Pitch、Yaw rate 和 throttle 并提交给姿态控制器。"
+      - source_id: "source.wiki.stabilize"
+        support: "contextual"
+        claim: "Wiki 描述 Roll/Pitch 控制倾角、Yaw 控制航向变化率、Throttle 控制平均电机速度。"
+
+  - id: "data.spool_state_command"
+    name: "电机 Spool 状态命令"
+    description: "Stabilize 根据油门零状态请求的电机待机或不受启动过程限制状态。"
+    fields:
+      - name: "desired_spool_state"
+        type: "enum"
+        description: "请求的电机 spool 状态。"
+        values: ["GROUND_IDLE", "THROTTLE_UNLIMITED"]
+    evidence:
+      - source_id: "source.code.stabilize_run"
+        support: "direct"
+        claim: "throttle_zero 决定 GROUND_IDLE 或 THROTTLE_UNLIMITED。"
+
+  - id: "data.axis_throttle_demand"
+    name: "轴控制量与油门需求"
+    description: "姿态/角速度控制器写入 AP_Motors 的归一化 Roll、Pitch、Yaw 和 Throttle 需求。"
+    fields:
+      - name: "roll"
+        type: "number"
+        description: "滚转轴控制量。"
+        unit: "1"
+        range: { minimum: -1.0, maximum: 1.0 }
+      - name: "pitch"
+        type: "number"
+        description: "俯仰轴控制量。"
+        unit: "1"
+        range: { minimum: -1.0, maximum: 1.0 }
+      - name: "yaw"
+        type: "number"
+        description: "偏航轴控制量。"
+        unit: "1"
+        range: { minimum: -1.0, maximum: 1.0 }
+      - name: "throttle"
+        type: "number"
+        description: "经过倾角补偿等处理后写入 AP_Motors 的油门。"
+        unit: "1"
+        range: { minimum: 0.0, maximum: 1.0 }
+    evidence:
+      - source_id: "source.code.motors_interface"
+        support: "direct"
+        claim: "AP_Motors 接口声明 Roll/Pitch/Yaw 为 -1..1、Throttle 为 0..1。"
+      - source_id: "source.code.rate_controller"
+        support: "direct"
+        claim: "角速度 PID 分别调用 set_roll、set_pitch 和 set_yaw。"
+      - source_id: "source.code.throttle_output"
+        support: "direct"
+        claim: "姿态控制器调用 motors.set_throttle。"
+
+  - id: "data.motor_limit_state"
+    name: "电机控制饱和反馈"
+    description: "AP_Motors 向控制器暴露的各轴和油门上下限饱和标志。"
+    fields:
+      - name: "roll_limited"
+        type: "boolean"
+        description: "滚转控制是否达到限制。"
+      - name: "pitch_limited"
+        type: "boolean"
+        description: "俯仰控制是否达到限制。"
+      - name: "yaw_limited"
+        type: "boolean"
+        description: "偏航控制是否达到限制。"
+      - name: "throttle_lower_limited"
+        type: "boolean"
+        description: "油门是否达到下限。"
+      - name: "throttle_upper_limited"
+        type: "boolean"
+        description: "油门是否达到上限。"
+    evidence:
+      - source_id: "source.code.motors_interface"
+        support: "direct"
+        claim: "AP_Motors_limit 定义 Roll、Pitch、Yaw 和油门上下限标志。"
+      - source_id: "source.code.rate_controller"
+        support: "direct"
+        claim: "角速度 PID 更新使用 motors.limit 对应轴标志。"
+
+  - id: "data.per_motor_output"
+    name: "逐电机输出命令"
+    description: "Matrix 混控、补偿、限幅和 spool 逻辑后得到的逐电机执行量及 PWM 域命令。"
+    fields:
+      - name: "motor_index"
+        type: "integer"
+        description: "电机逻辑索引。"
+      - name: "actuator"
+        type: "number"
+        description: "推力线性化后并经过 slew 限制的归一化执行量。"
+        unit: "1"
+        range: { minimum: 0.0, maximum: 1.0 }
+      - name: "pwm_command"
+        type: "integer"
+        description: "传给 SRV 输出层的 PWM 域命令。"
+        unit: "PWM count"
+    evidence:
+      - source_id: "source.code.matrix_mixing"
+        support: "direct"
+        claim: "Matrix 混控把 Roll/Pitch/Yaw/Throttle 需求组合为逐电机推力。"
+      - source_id: "source.code.matrix_output"
+        support: "direct"
+        claim: "逐电机执行量经 output_to_pwm 后调用 rc_write。"
+
+  - id: "data.actuator_signal"
+    name: "执行器硬件信号"
+    description: "SRV/HAL 输出层向 ESC 或电机执行机构发送的板级信号；协议细节在本模型边界之外。"
+    fields:
+      - name: "channel"
+        type: "integer"
+        description: "输出通道。"
+      - name: "signal"
+        type: "object"
+        description: "PWM、DShot 或其他板级协议编码后的输出信号。"
+    evidence:
+      - source_id: "source.code.motor_channel_write"
+        support: "direct"
+        claim: "AP_Motors::rc_write 将电机函数和值写入 SRV_Channels。"
+      - source_id: "source.code.motors_output_entry"
+        support: "direct"
+        claim: "Copter::motors_output 通过 srv.push 或 hal.rcout->push 推送输出。"
+
+components:
+  - id: "system.arducopter"
+    name: "ArduCopter"
+    level: 0
+    scope: "internal"
+    kind: "system"
+    responsibility: "接收驾驶员和传感器输入，执行飞行模式与闭环控制，并产生飞行器执行输出。"
+    verification: "docs_and_code_confirmed"
+    evidence:
+      - source_id: "source.wiki.flight_modes"
+        support: "contextual"
+        claim: "Copter 通过飞行模式提供不同层次的手动和自动控制。"
+      - source_id: "source.code.copter_scheduler"
+        support: "direct"
+        claim: "Copter 调度表组织传感器、控制、模式和输出任务。"
+
+  - id: "external.pilot_rc"
+    name: "驾驶员与 RC 链路"
+    level: 0
+    scope: "external"
+    kind: "actor"
+    responsibility: "提供摇杆和飞行模式开关输入。"
+    ports:
+      - id: "receiver_signal"
+        name: "接收机通道信号"
+        direction: "output"
+        data_contract_id: "data.receiver_channel_samples"
+        required: true
+    verification: "docs_and_code_confirmed"
+    evidence:
+      - source_id: "source.wiki.stabilize"
+        support: "contextual"
+        claim: "Stabilize 的倾角、偏航速率和油门由驾驶员输入控制。"
+
+  - id: "external.vehicle_sensors"
+    name: "飞行器惯性传感器"
+    level: 0
+    scope: "external"
+    kind: "physical_device"
+    responsibility: "向 ArduCopter 提供惯性测量样本。"
+    ports:
+      - id: "imu_sample"
+        name: "IMU 样本"
+        direction: "output"
+        data_contract_id: "data.imu_sample"
+        required: true
+    verification: "code_confirmed"
+    evidence:
+      - source_id: "source.code.copter_scheduler"
+        support: "contextual"
+        claim: "FAST_TASK 首先更新 AP_InertialSensor。"
+
+  - id: "external.motor_actuators"
+    name: "ESC 与电机执行机构"
+    level: 0
+    scope: "external"
+    kind: "physical_device"
+    responsibility: "接收板级执行器信号并产生各电机推力。"
+    ports:
+      - id: "actuator_signal"
+        name: "执行器信号"
+        direction: "input"
+        data_contract_id: "data.actuator_signal"
+        required: true
+    verification: "docs_and_code_confirmed"
+    evidence:
+      - source_id: "source.wiki.attitude_control"
+        support: "contextual"
+        claim: "AP_Motors 和 HAL 最终把控制结果送到板级 PWM 输出。"
+
+  - id: "domain.input_commands"
+    name: "输入与外部命令"
+    level: 1
+    scope: "internal"
+    kind: "capability_domain"
+    parent_id: "system.arducopter"
+    responsibility: "读取、校验和规范化驾驶员输入。"
+    verification: "code_confirmed"
+
+  - id: "domain.flight_mode_mission"
+    name: "飞行模式与任务执行"
+    level: 1
+    scope: "internal"
+    kind: "capability_domain"
+    parent_id: "system.arducopter"
+    responsibility: "管理当前飞行模式并执行模式特有行为。"
+    verification: "docs_and_code_confirmed"
+
+  - id: "domain.state_estimation"
+    name: "状态估计"
+    level: 1
+    scope: "internal"
+    kind: "capability_domain"
+    parent_id: "system.arducopter"
+    responsibility: "把传感器测量融合为控制器可消费的姿态和角速度状态。"
+    verification: "code_confirmed"
+
+  - id: "domain.flight_control"
+    name: "飞行控制"
+    level: 1
+    scope: "internal"
+    kind: "capability_domain"
+    parent_id: "system.arducopter"
+    responsibility: "根据目标和反馈计算姿态与角速度闭环控制量。"
+    verification: "docs_and_code_confirmed"
+
+  - id: "domain.actuation"
+    name: "电机与执行输出"
+    level: 1
+    scope: "internal"
+    kind: "capability_domain"
+    parent_id: "system.arducopter"
+    responsibility: "将轴控制量和油门混合、限幅并转换为执行器通道输出。"
+    verification: "docs_and_code_confirmed"
+
+  - id: "input.rc_processing"
+    name: "RC 输入处理"
+    level: 2
+    scope: "internal"
+    kind: "input_adapter"
+    parent_id: "domain.input_commands"
+    responsibility: "读取接收机输入，维护输入有效性与油门零状态，并提供规范化控制量和模式开关选择。"
+    ports:
+      - id: "receiver_signal"
+        name: "接收机通道信号"
+        direction: "input"
+        data_contract_id: "data.receiver_channel_samples"
+        required: true
+      - id: "pilot_controls"
+        name: "驾驶员控制输入"
+        direction: "output"
+        data_contract_id: "data.pilot_control_input"
+        required: true
+      - id: "mode_selection"
+        name: "飞行模式选择"
+        direction: "output"
+        data_contract_id: "data.flight_mode_selection"
+        required: true
+    implementation:
+      - source_id: "source.code.rc_loop"
+        role: "primary"
+      - source_id: "source.code.read_radio"
+        role: "primary"
+      - source_id: "source.code.mode_switch"
+        role: "supporting"
+    verification: "code_confirmed"
+    evidence:
+      - source_id: "source.code.read_radio"
+        support: "direct"
+        claim: "读取新 RC 输入并更新 throttle/failsafe/过滤状态。"
+      - source_id: "source.code.rc_loop"
+        support: "direct"
+        claim: "rc_loop 同时读取 radio 和模式开关。"
+    tags: ["rc", "input"]
+
+  - id: "mode.flight_mode_dispatch"
+    name: "飞行模式管理与分派"
+    level: 2
+    scope: "internal"
+    kind: "dispatcher"
+    parent_id: "domain.flight_mode_mission"
+    responsibility: "接受模式切换请求，维护当前 flightmode，并在主循环周期调用当前模式的 run 行为。"
+    ports:
+      - id: "mode_selection"
+        name: "飞行模式选择"
+        direction: "input"
+        data_contract_id: "data.flight_mode_selection"
+        required: true
+      - id: "execution_tick"
+        name: "当前模式执行触发"
+        direction: "output"
+        data_contract_id: "data.mode_execution_tick"
+        required: true
+    implementation:
+      - source_id: "source.code.mode_switch"
+        role: "supporting"
+      - source_id: "source.code.mode_dispatch"
+        role: "primary"
+    verification: "code_confirmed"
+    evidence:
+      - source_id: "source.code.mode_switch"
+        support: "direct"
+        claim: "RC 模式开关通过 Copter::set_mode 请求模式切换。"
+      - source_id: "source.code.mode_dispatch"
+        support: "direct"
+        claim: "当前 flightmode 的 run 方法在 update_flight_mode 中执行。"
+    tags: ["mode", "dispatch"]
+
+  - id: "mode.stabilize"
+    name: "Stabilize 模式"
+    level: 2
+    scope: "internal"
+    kind: "mode"
+    parent_id: "domain.flight_mode_mission"
+    responsibility: "把有效驾驶员输入转换为 Roll/Pitch 倾角、Yaw 速率、手动油门和电机 spool 目标。"
+    ports:
+      - id: "execution_tick"
+        name: "模式执行触发"
+        direction: "input"
+        data_contract_id: "data.mode_execution_tick"
+        required: true
+      - id: "pilot_controls"
+        name: "驾驶员控制输入"
+        direction: "input"
+        data_contract_id: "data.pilot_control_input"
+        required: true
+      - id: "stabilize_target"
+        name: "姿态与油门目标"
+        direction: "output"
+        data_contract_id: "data.stabilize_target"
+        required: true
+      - id: "spool_command"
+        name: "Spool 状态命令"
+        direction: "output"
+        data_contract_id: "data.spool_state_command"
+        required: true
+    conditions:
+      - "active_mode == STABILIZE"
+      - "无有效 RC 输入时 Roll/Pitch 和 Yaw rate 目标回到零。"
+      - "SHUT_DOWN 或 GROUND_IDLE 状态下油门目标被置零并重置控制器状态。"
+    implementation:
+      - source_id: "source.code.stabilize_run"
+        role: "primary"
+      - source_id: "source.code.pilot_lean"
+        role: "supporting"
+      - source_id: "source.code.pilot_yaw"
+        role: "supporting"
+      - source_id: "source.code.pilot_throttle"
+        role: "supporting"
+    verification: "docs_and_code_confirmed"
+    evidence:
+      - source_id: "source.code.stabilize_run"
+        support: "direct"
+        claim: "源码直接计算并提交姿态、偏航速率、油门和 spool 目标。"
+      - source_id: "source.wiki.stabilize"
+        support: "contextual"
+        claim: "Wiki 描述 Stabilize 为手动飞行并自动水平 Roll/Pitch。"
+    tags: ["mode", "manual_control", "stabilize"]
+
+  - id: "estimation.attitude"
+    name: "姿态与角速度估计"
+    level: 2
+    scope: "internal"
+    kind: "estimator"
+    parent_id: "domain.state_estimation"
+    responsibility: "更新 AHRS，并向姿态与速率控制提供机体姿态和最新角速度。"
+    ports:
+      - id: "imu_sample"
+        name: "IMU 样本"
+        direction: "input"
+        data_contract_id: "data.imu_sample"
+        required: true
+      - id: "attitude_rate_state"
+        name: "姿态与角速度状态"
+        direction: "output"
+        data_contract_id: "data.attitude_rate_state"
+        required: true
+    implementation:
+      - source_id: "source.code.ahrs_update"
+        role: "primary"
+      - source_id: "source.code.copter_scheduler"
+        role: "supporting"
+    verification: "code_confirmed"
+    evidence:
+      - source_id: "source.code.ahrs_update"
+        support: "direct"
+        claim: "Copter::read_AHRS 调用 ahrs.update(true)。"
+      - source_id: "source.code.attitude_feedback"
+        support: "direct"
+        claim: "姿态控制从 AHRS 消费姿态和 gyro 数据。"
+    tags: ["ahrs", "estimation", "feedback"]
+
+  - id: "control.attitude_rate"
+    name: "姿态与角速度控制"
+    level: 2
+    scope: "internal"
+    kind: "controller"
+    parent_id: "domain.flight_control"
+    responsibility: "把姿态目标与估计状态的误差转换为机体系角速度目标，再由角速度 PID 产生轴控制量，同时处理油门倾角补偿。"
+    ports:
+      - id: "stabilize_target"
+        name: "姿态与油门目标"
+        direction: "input"
+        data_contract_id: "data.stabilize_target"
+        required: true
+      - id: "attitude_rate_state"
+        name: "姿态与角速度反馈"
+        direction: "input"
+        data_contract_id: "data.attitude_rate_state"
+        required: true
+      - id: "motor_limits"
+        name: "电机饱和限制反馈"
+        direction: "input"
+        data_contract_id: "data.motor_limit_state"
+        required: true
+      - id: "axis_throttle_demand"
+        name: "轴控制量与油门需求"
+        direction: "output"
+        data_contract_id: "data.axis_throttle_demand"
+        required: true
+    implementation:
+      - source_id: "source.code.attitude_input"
+        role: "primary"
+      - source_id: "source.code.attitude_feedback"
+        role: "primary"
+      - source_id: "source.code.rate_controller"
+        role: "primary"
+      - source_id: "source.code.throttle_output"
+        role: "supporting"
+    verification: "docs_and_code_confirmed"
+    evidence:
+      - source_id: "source.code.attitude_feedback"
+        support: "direct"
+        claim: "姿态误差被转换为机体系角速度目标。"
+      - source_id: "source.code.rate_controller"
+        support: "direct"
+        claim: "角速度 PID 使用 gyro 反馈并写入 AP_Motors 轴控制量。"
+      - source_id: "source.wiki.attitude_control"
+        support: "contextual"
+        claim: "开发文档描述角度误差到期望角速度，再到电机控制量的级联控制。"
+    tags: ["attitude", "rate", "pid", "controller"]
+
+  - id: "actuation.motor_mixer"
+    name: "电机混控与限制"
+    level: 2
+    scope: "internal"
+    kind: "mixer"
+    parent_id: "domain.actuation"
+    responsibility: "应用 spool 逻辑、补偿和控制分配，把 Roll/Pitch/Yaw/Throttle 需求转换为 Matrix 机架逐电机输出，并产生饱和限制反馈。"
+    ports:
+      - id: "axis_throttle_demand"
+        name: "轴控制量与油门需求"
+        direction: "input"
+        data_contract_id: "data.axis_throttle_demand"
+        required: true
+      - id: "spool_command"
+        name: "Spool 状态命令"
+        direction: "input"
+        data_contract_id: "data.spool_state_command"
+        required: true
+      - id: "motor_limits"
+        name: "电机饱和限制反馈"
+        direction: "output"
+        data_contract_id: "data.motor_limit_state"
+        required: true
+      - id: "per_motor_output"
+        name: "逐电机输出"
+        direction: "output"
+        data_contract_id: "data.per_motor_output"
+        required: true
+    conditions:
+      - "frame implementation is AP_MotorsMatrix"
+      - "输出受 armed、interlock 和 spool_state 等状态约束。"
+    implementation:
+      - source_id: "source.code.motors_interface"
+        role: "supporting"
+      - source_id: "source.code.multicopter_output"
+        role: "primary"
+      - source_id: "source.code.matrix_mixing"
+        role: "primary"
+      - source_id: "source.code.matrix_output"
+        role: "supporting"
+    verification: "docs_and_code_confirmed"
+    evidence:
+      - source_id: "source.code.matrix_mixing"
+        support: "direct"
+        claim: "Matrix 实现读取 Roll/Pitch/Yaw/Throttle 并进行控制分配和限幅。"
+      - source_id: "source.wiki.attitude_control"
+        support: "contextual"
+        claim: "开发文档将 AP_Motors 定义为把轴控制量和油门转换为绝对电机输出的混控组件。"
+    tags: ["motors", "mixer", "allocation", "limits"]
+
+  - id: "actuation.output_adapter"
+    name: "执行器输出适配"
+    level: 2
+    scope: "internal"
+    kind: "output_adapter"
+    parent_id: "domain.actuation"
+    responsibility: "把逐电机执行量转换并写入 SRV/HAL 输出通道，形成外部 ESC 或电机可消费的板级信号。"
+    ports:
+      - id: "per_motor_output"
+        name: "逐电机输出"
+        direction: "input"
+        data_contract_id: "data.per_motor_output"
+        required: true
+      - id: "actuator_signal"
+        name: "执行器硬件信号"
+        direction: "output"
+        data_contract_id: "data.actuator_signal"
+        required: true
+    implementation:
+      - source_id: "source.code.matrix_output"
+        role: "primary"
+      - source_id: "source.code.motor_channel_write"
+        role: "primary"
+      - source_id: "source.code.motors_output_entry"
+        role: "boundary"
+    verification: "docs_and_code_confirmed"
+    evidence:
+      - source_id: "source.code.motor_channel_write"
+        support: "direct"
+        claim: "rc_write 将输出写入对应 SRV 电机功能。"
+      - source_id: "source.code.motors_output_entry"
+        support: "direct"
+        claim: "Copter 输出入口最终调用 srv.push 或 hal.rcout->push。"
+    tags: ["output", "srv_channels", "hal_boundary"]
+
+flows:
+  - id: "flow.pilot_to_rc"
+    name: "驾驶员通道输入"
+    kind: "command"
+    from: { component_id: "external.pilot_rc", port_id: "receiver_signal" }
+    to: { component_id: "input.rc_processing", port_id: "receiver_signal" }
+    data_contract_id: "data.receiver_channel_samples"
+    transport: "hardware_io"
+    cadence:
+      kind: "periodic"
+      rate_hz: 250
+      constraint: "调度表以 250 Hz 调用 rc_loop；read_input 仅在有新样本时返回 true。"
+    transform: "接收机/HAL 解码结果进入 RC_Channels；具体无线协议不在模型范围内。"
+    verification: "code_confirmed"
+    evidence:
+      - source_id: "source.code.copter_scheduler"
+        support: "direct"
+        claim: "scheduler_tasks 以 250 Hz 调用 rc_loop。"
+      - source_id: "source.code.read_radio"
+        support: "direct"
+        claim: "read_radio 调用 rc().read_input()。"
+    scenario_ids: ["scenario.stabilize_manual_control"]
+
+  - id: "flow.rc_to_mode_dispatch"
+    name: "RC 模式开关选择"
+    kind: "event"
+    from: { component_id: "input.rc_processing", port_id: "mode_selection" }
+    to: { component_id: "mode.flight_mode_dispatch", port_id: "mode_selection" }
+    data_contract_id: "data.flight_mode_selection"
+    transport: "direct_call"
+    cadence:
+      kind: "on_change"
+      constraint: "模式开关位置经去抖确认后触发。"
+    transform: "模式开关位置映射到 FLTMODE 参数并发出 RC_COMMAND 模式请求。"
+    conditions:
+      - "RC input is valid"
+      - "requested mode is STABILIZE"
+    verification: "code_confirmed"
+    evidence:
+      - source_id: "source.code.rc_loop"
+        support: "direct"
+        claim: "rc_loop 调用 read_mode_switch。"
+      - source_id: "source.code.mode_switch"
+        support: "direct"
+        claim: "mode_switch_changed 调用 copter.set_mode。"
+    scenario_ids: ["scenario.stabilize_manual_control"]
+
+  - id: "flow.mode_dispatch_to_stabilize"
+    name: "执行 Stabilize 模式"
+    kind: "event"
+    from: { component_id: "mode.flight_mode_dispatch", port_id: "execution_tick" }
+    to: { component_id: "mode.stabilize", port_id: "execution_tick" }
+    data_contract_id: "data.mode_execution_tick"
+    transport: "virtual_call"
+    cadence:
+      kind: "periodic"
+      constraint: "FAST_TASK 主循环速率；update_flight_mode 注释要求 100 Hz 或更高。"
+    transform: "flightmode 指针的虚调用分派到 ModeStabilize::run。"
+    conditions:
+      - "active_mode == STABILIZE"
+    verification: "code_confirmed"
+    evidence:
+      - source_id: "source.code.mode_dispatch"
+        support: "direct"
+        claim: "update_flight_mode 调用 flightmode->run()。"
+      - source_id: "source.code.stabilize_run"
+        support: "direct"
+        claim: "ModeStabilize 实现当前模式的 run 行为。"
+    scenario_ids: ["scenario.stabilize_manual_control"]
+
+  - id: "flow.rc_to_stabilize"
+    name: "Stabilize 消费驾驶员控制输入"
+    kind: "command"
+    from: { component_id: "input.rc_processing", port_id: "pilot_controls" }
+    to: { component_id: "mode.stabilize", port_id: "pilot_controls" }
+    data_contract_id: "data.pilot_control_input"
+    transport: "shared_state"
+    cadence:
+      kind: "periodic"
+      constraint: "每次 ModeStabilize::run 消费最近一次有效 RC_Channel 状态。"
+    transform: "通过 norm_input_dz、有效性和 throttle_zero 等共享状态提供模式输入。"
+    verification: "code_confirmed"
+    evidence:
+      - source_id: "source.code.pilot_lean"
+        support: "direct"
+        claim: "Stabilize 辅助函数读取 channel_roll 和 channel_pitch。"
+      - source_id: "source.code.pilot_yaw"
+        support: "direct"
+        claim: "Yaw 辅助函数读取 channel_yaw。"
+      - source_id: "source.code.pilot_throttle"
+        support: "direct"
+        claim: "Throttle 辅助函数读取 channel_throttle。"
+    scenario_ids: ["scenario.stabilize_manual_control"]
+
+  - id: "flow.sensors_to_estimation"
+    name: "惯性测量进入状态估计"
+    kind: "measurement"
+    from: { component_id: "external.vehicle_sensors", port_id: "imu_sample" }
+    to: { component_id: "estimation.attitude", port_id: "imu_sample" }
+    data_contract_id: "data.imu_sample"
+    transport: "hardware_io"
+    cadence:
+      kind: "periodic"
+      constraint: "AP_InertialSensor 在 FAST_TASK 中更新，AHRS 随后在主循环更新。"
+    transform: "板级传感器采样经 AP_InertialSensor 暴露给 AHRS；驱动细节不在本模型范围。"
+    verification: "code_confirmed"
+    evidence:
+      - source_id: "source.code.copter_scheduler"
+        support: "direct"
+        claim: "调度表先运行 AP_InertialSensor::update，再运行 read_AHRS。"
+      - source_id: "source.code.ahrs_update"
+        support: "direct"
+        claim: "read_AHRS 调用 ahrs.update(true)。"
+    scenario_ids: ["scenario.stabilize_manual_control"]
+
+  - id: "flow.estimation_to_attitude_control"
+    name: "姿态与角速度反馈"
+    kind: "feedback"
+    from: { component_id: "estimation.attitude", port_id: "attitude_rate_state" }
+    to: { component_id: "control.attitude_rate", port_id: "attitude_rate_state" }
+    data_contract_id: "data.attitude_rate_state"
+    transport: "shared_state"
+    cadence:
+      kind: "periodic"
+      constraint: "姿态控制和角速度控制读取当前 AHRS/gyro 状态。"
+    transform: "AHRS 提供 body-to-NED 姿态，最新 gyro 作为角速度 PID 测量。"
+    feedback: true
+    verification: "code_confirmed"
+    evidence:
+      - source_id: "source.code.attitude_feedback"
+        support: "direct"
+        claim: "attitude_controller_run_quat 读取 AHRS 姿态和 gyro。"
+      - source_id: "source.code.rate_controller"
+        support: "direct"
+        claim: "rate_controller_run 读取 ahrs.get_gyro_latest。"
+    scenario_ids: ["scenario.stabilize_manual_control"]
+
+  - id: "flow.stabilize_to_attitude_control"
+    name: "Stabilize 姿态与油门目标"
+    kind: "command"
+    from: { component_id: "mode.stabilize", port_id: "stabilize_target" }
+    to: { component_id: "control.attitude_rate", port_id: "stabilize_target" }
+    data_contract_id: "data.stabilize_target"
+    transport: "direct_call"
+    cadence:
+      kind: "periodic"
+      constraint: "每次 ModeStabilize::run 更新目标。"
+    transform: "Roll/Pitch 摇杆转换为受倾角限制的欧拉角；Yaw 转换为速率；Throttle 经 hover-centered expo 转换并启用倾角补偿。"
+    conditions:
+      - "active_mode == STABILIZE"
+    verification: "docs_and_code_confirmed"
+    evidence:
+      - source_id: "source.code.stabilize_run"
+        support: "direct"
+        claim: "调用 attitude input 和 set_throttle_out 提交目标。"
+      - source_id: "source.code.attitude_input"
+        support: "direct"
+        claim: "姿态控制器接收 Roll/Pitch 角和 Yaw rate。"
+      - source_id: "source.wiki.stabilize"
+        support: "contextual"
+        claim: "Wiki 对三个姿态轴和油门的业务语义与源码一致。"
+    scenario_ids: ["scenario.stabilize_manual_control"]
+
+  - id: "flow.stabilize_to_motor_mixer_spool"
+    name: "Stabilize 电机 Spool 请求"
+    kind: "command"
+    from: { component_id: "mode.stabilize", port_id: "spool_command" }
+    to: { component_id: "actuation.motor_mixer", port_id: "spool_command" }
+    data_contract_id: "data.spool_state_command"
+    transport: "direct_setter"
+    cadence:
+      kind: "periodic"
+      constraint: "每次 ModeStabilize::run 根据 throttle_zero 更新。"
+    transform: "零油门请求 GROUND_IDLE，否则请求 THROTTLE_UNLIMITED；未解锁时 setter 仍强制 SHUT_DOWN。"
+    verification: "code_confirmed"
+    evidence:
+      - source_id: "source.code.stabilize_run"
+        support: "direct"
+        claim: "ModeStabilize::run 调用 motors->set_desired_spool_state。"
+    scenario_ids: ["scenario.stabilize_manual_control"]
+
+  - id: "flow.attitude_control_to_motor_mixer"
+    name: "姿态控制量写入电机混控"
+    kind: "control"
+    from: { component_id: "control.attitude_rate", port_id: "axis_throttle_demand" }
+    to: { component_id: "actuation.motor_mixer", port_id: "axis_throttle_demand" }
+    data_contract_id: "data.axis_throttle_demand"
+    transport: "direct_setter"
+    cadence:
+      kind: "periodic"
+      constraint: "角速度控制在 FAST_TASK 或专用 rate thread 中运行；油门目标由模式更新。"
+    transform: "角速度 PID 生成 Roll/Pitch/Yaw 归一化控制量；手动油门经倾角补偿后写入 AP_Motors。"
+    verification: "code_confirmed"
+    evidence:
+      - source_id: "source.code.rate_controller"
+        support: "direct"
+        claim: "角速度 PID 调用 motors.set_roll/pitch/yaw。"
+      - source_id: "source.code.throttle_output"
+        support: "direct"
+        claim: "set_throttle_out 调用 motors.set_throttle。"
+      - source_id: "source.code.motors_interface"
+        support: "direct"
+        claim: "AP_Motors 定义轴控制量和油门的范围。"
+    scenario_ids: ["scenario.stabilize_manual_control"]
+
+  - id: "flow.motor_mixer_limit_feedback"
+    name: "混控饱和限制反馈"
+    kind: "feedback"
+    from: { component_id: "actuation.motor_mixer", port_id: "motor_limits" }
+    to: { component_id: "control.attitude_rate", port_id: "motor_limits" }
+    data_contract_id: "data.motor_limit_state"
+    transport: "shared_state"
+    cadence:
+      kind: "periodic"
+      constraint: "角速度 PID 每次更新读取上一混控结果的限制标志。"
+    transform: "混控输出饱和状态用于各轴 PID 的抗积分饱和处理。"
+    feedback: true
+    verification: "code_confirmed"
+    evidence:
+      - source_id: "source.code.motors_interface"
+        support: "direct"
+        claim: "AP_Motors 暴露 limit.roll/pitch/yaw/throttle 标志。"
+      - source_id: "source.code.rate_controller"
+        support: "direct"
+        claim: "PID update_all 使用对应的 motors.limit 轴标志。"
+    scenario_ids: ["scenario.stabilize_manual_control"]
+
+  - id: "flow.motor_mixer_to_output_adapter"
+    name: "混控结果转换为逐电机输出"
+    kind: "actuation"
+    from: { component_id: "actuation.motor_mixer", port_id: "per_motor_output" }
+    to: { component_id: "actuation.output_adapter", port_id: "per_motor_output" }
+    data_contract_id: "data.per_motor_output"
+    transport: "internal_state"
+    cadence:
+      kind: "periodic"
+      constraint: "Copter 电机输出 FAST_TASK 或专用 rate thread。"
+    transform: "Matrix 控制分配、补偿、限幅、推力线性化和 slew 限制生成逐电机 PWM 域命令。"
+    conditions:
+      - "frame implementation is AP_MotorsMatrix"
+    verification: "code_confirmed"
+    evidence:
+      - source_id: "source.code.multicopter_output"
+        support: "direct"
+        claim: "output 依次运行 spool、混控、补偿和 output_to_motors。"
+      - source_id: "source.code.matrix_mixing"
+        support: "direct"
+        claim: "output_armed_stabilizing 执行 Matrix 控制分配。"
+      - source_id: "source.code.matrix_output"
+        support: "direct"
+        claim: "output_to_motors 生成 actuator 和 PWM 域输出。"
+    scenario_ids: ["scenario.stabilize_manual_control"]
+
+  - id: "flow.output_adapter_to_actuators"
+    name: "执行器通道输出"
+    kind: "actuation"
+    from: { component_id: "actuation.output_adapter", port_id: "actuator_signal" }
+    to: { component_id: "external.motor_actuators", port_id: "actuator_signal" }
+    data_contract_id: "data.actuator_signal"
+    transport: "hardware_io"
+    cadence:
+      kind: "periodic"
+      constraint: "主循环或 rate thread 输出；具体协议频率由板级与电机配置决定。"
+    transform: "SRV_Channels 将逻辑电机功能映射到输出通道，随后由 SRV/HAL push 发送。"
+    verification: "docs_and_code_confirmed"
+    evidence:
+      - source_id: "source.code.motor_channel_write"
+        support: "direct"
+        claim: "rc_write 调用 SRV_Channels 设置电机通道输出。"
+      - source_id: "source.code.motors_output_entry"
+        support: "direct"
+        claim: "motors_output 调用 srv.push 或 hal.rcout->push。"
+      - source_id: "source.wiki.attitude_control"
+        support: "contextual"
+        claim: "开发文档描述 AP_Motors 输出最终通过 HAL 出现在板级输出端。"
+    scenario_ids: ["scenario.stabilize_manual_control"]
+
+scenarios:
+  - id: "scenario.stabilize_manual_control"
+    name: "Stabilize 手动姿态控制"
+    description: "驾驶员通过 RC 直接控制 Roll/Pitch 倾角、Yaw 变化率和油门，姿态/角速度闭环维持目标并驱动 Matrix 多旋翼电机。"
+    default_level: 2
+    entry_conditions:
+      - "当前或请求的飞行模式为 STABILIZE。"
+      - "配置使用多旋翼 AP_MotorsMatrix 输出实现。"
+      - "正常控制路径中 RC 输入有效；无效输入的目标归零行为保留为组件条件。"
+    exit_conditions:
+      - "切换到其他飞行模式。"
+      - "解除武装或安全逻辑使电机进入 SHUT_DOWN；完整安全流程由 Failsafe 场景建模。"
+    component_ids:
+      - "system.arducopter"
+      - "external.pilot_rc"
+      - "external.vehicle_sensors"
+      - "external.motor_actuators"
+      - "domain.input_commands"
+      - "domain.flight_mode_mission"
+      - "domain.state_estimation"
+      - "domain.flight_control"
+      - "domain.actuation"
+      - "input.rc_processing"
+      - "mode.flight_mode_dispatch"
+      - "mode.stabilize"
+      - "estimation.attitude"
+      - "control.attitude_rate"
+      - "actuation.motor_mixer"
+      - "actuation.output_adapter"
+    flow_ids:
+      - "flow.pilot_to_rc"
+      - "flow.rc_to_mode_dispatch"
+      - "flow.mode_dispatch_to_stabilize"
+      - "flow.rc_to_stabilize"
+      - "flow.sensors_to_estimation"
+      - "flow.estimation_to_attitude_control"
+      - "flow.stabilize_to_attitude_control"
+      - "flow.stabilize_to_motor_mixer_spool"
+      - "flow.attitude_control_to_motor_mixer"
+      - "flow.motor_mixer_limit_feedback"
+      - "flow.motor_mixer_to_output_adapter"
+      - "flow.output_adapter_to_actuators"
+    verification: "docs_and_code_confirmed"
+    evidence:
+      - source_id: "source.wiki.stabilize"
+        support: "direct"
+        claim: "Wiki 定义 Stabilize 的手动倾角、Yaw rate、油门和自稳业务行为。"
+      - source_id: "source.code.stabilize_run"
+        support: "direct"
+        claim: "源码实现驾驶员输入到姿态控制和电机 spool 的模式行为。"
+      - source_id: "source.wiki.attitude_control"
+        support: "contextual"
+        claim: "开发文档给出飞行模式、姿态控制、AP_Motors 和 HAL 的总体路径。"
+    notes:
+      - "该图是闭环稳态数据依赖图，不是单次循环的严格时序图。"
+      - "Copter 调度表先运行 rate controller 和 motors output，再更新 AHRS 和 flight mode；这是降低 gyro 延迟的设计。"
+      - "Stabilize 不使用 AC_PosControl，也不要求位置估计，因此第一场景不包含导航和位置控制域。"
+      - "Radio/EKF Failsafe 的检测、动作策略和模式切换将在独立场景中补充。"

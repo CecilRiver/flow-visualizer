@@ -1,0 +1,159 @@
+# E2E fixture: a flow model that is syntactically valid YAML but fails the
+# Schema, so the ValidationPanel has something to report next to the healthy
+# bundle in the same folder (DESIGN.md 19.3 path 2).
+#
+# Everything else about this file is well-formed on purpose: the errors below
+# are the only ones the panel should report, which is what makes the assertion
+# on the panel's contents meaningful rather than "some error appeared".
+#
+#   1. `model.review_status` is not one of the four allowed values
+#   2. `flows[0].kind` is not a flow kind
+#   3. `flows[0].from` is missing `port_id`
+#   4. `flows[0]` omits the required `verification`
+schema_version: "0.1"
+
+model:
+  id: "fixture.broken.v0_1"
+  title: "故意损坏的模型"
+  description: "用于 E2E 校验面板的固定样例。"
+  vehicle: "ArduCopter"
+  source_revision: "0000000000000000000000000000000000000000"
+  generated_on: "2026-01-01"
+  language: "zh-CN"
+  review_status: "definitely_not_a_status"
+  scope:
+    levels: [0, 1, 2]
+    frame_profile: "multirotor_matrix"
+    includes:
+      - "无"
+    excludes:
+      - "无"
+    assumptions:
+      - "无"
+
+sources:
+  - id: "source.code.broken"
+    kind: "source_code"
+    title: "占位源码"
+    path: "ArduCopter/broken.cpp"
+    revision: "0000000000000000000000000000000000000000"
+    symbol: "Copter::broken"
+    line_start: 1
+    line_end: 2
+
+data_contracts:
+  - id: "data.broken"
+    name: "占位契约"
+    description: "占位。"
+    fields:
+      - name: "value"
+        type: "number"
+        unit: "1"
+        description: "占位字段。"
+
+components:
+  - id: "l2.broken_source"
+    name: "损坏的源组件"
+    level: 2
+    scope: "internal"
+    kind: "controller"
+    parent_id: "capability.broken"
+    responsibility: "占位。"
+    verification: "inferred"
+    ports:
+      - id: "out"
+        name: "输出"
+        direction: "output"
+        data_contract_id: "data.broken"
+    implementation:
+      - source_id: "source.code.broken"
+        role: "primary"
+        notes: "占位绑定。"
+    evidence:
+      - source_id: "source.code.broken"
+        support: "direct"
+        claim: "占位。"
+
+  - id: "capability.broken"
+    name: "占位能力域"
+    level: 1
+    scope: "internal"
+    kind: "capability_domain"
+    parent_id: "system.broken"
+    responsibility: "占位。"
+    verification: "inferred"
+    evidence:
+      - source_id: "source.code.broken"
+        support: "direct"
+        claim: "占位。"
+
+  - id: "system.broken"
+    name: "占位系统"
+    level: 0
+    scope: "internal"
+    kind: "system"
+    responsibility: "占位。"
+    verification: "inferred"
+    evidence:
+      - source_id: "source.code.broken"
+        support: "direct"
+        claim: "占位。"
+
+  - id: "l2.broken_sink"
+    name: "损坏的汇组件"
+    level: 2
+    scope: "internal"
+    kind: "controller"
+    parent_id: "capability.broken"
+    responsibility: "占位。"
+    verification: "inferred"
+    ports:
+      - id: "in"
+        name: "输入"
+        direction: "input"
+        data_contract_id: "data.broken"
+    implementation:
+      - source_id: "source.code.broken"
+        role: "primary"
+        notes: "占位绑定。"
+    evidence:
+      - source_id: "source.code.broken"
+        support: "direct"
+        claim: "占位。"
+
+flows:
+  - id: "flow.broken"
+    name: "损坏的数据流"
+    kind: "teleport"
+    from: { component_id: "l2.broken_source" }
+    to: { component_id: "l2.broken_sink", port_id: "in" }
+    data_contract_id: "data.broken"
+    transport: "direct_call"
+    cadence:
+      kind: "periodic"
+      rate_hz: 400
+      constraint: "占位。"
+    transform: "原样传递。"
+    evidence:
+      - source_id: "source.code.broken"
+        support: "direct"
+        claim: "占位。"
+    scenario_ids: ["scenario.broken"]
+
+scenarios:
+  - id: "scenario.broken"
+    name: "损坏场景"
+    description: "占位。"
+    default_level: 2
+    entry_conditions:
+      - "无"
+    exit_conditions:
+      - "无"
+    component_ids:
+      ["system.broken", "capability.broken", "l2.broken_source", "l2.broken_sink"]
+    flow_ids: ["flow.broken"]
+    verification: "inferred"
+    evidence:
+      - source_id: "source.code.broken"
+        support: "direct"
+        claim: "占位。"
