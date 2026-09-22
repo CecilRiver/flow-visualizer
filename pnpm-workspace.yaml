@@ -1,0 +1,7 @@
+# pnpm >= 10 reads settings from this file rather than package.json.
+# pnpm 12 gates postinstall scripts behind `allowBuilds` (a package -> boolean
+# map). esbuild's postinstall places the platform binary, and vue-demi's
+# switches its entry point to match the installed Vue version.
+allowBuilds:
+  esbuild: true
+  vue-demi: true

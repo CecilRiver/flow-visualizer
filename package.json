@@ -1,0 +1,54 @@
+{
+  "name": "flow-visualizer",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone read-only browser for Schema-compatible L0-L2 business flow models",
+  "scripts": {
+    "dev": "vite",
+    "schema:types": "node scripts/generate-schema-types.mjs",
+    "schema:check": "node scripts/check-schema-registry.mjs",
+    "lint": "eslint .",
+    "typecheck": "vue-tsc --build --force",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:e2e": "playwright test",
+    "build": "pnpm typecheck && vite build",
+    "preview": "vite preview",
+    "check": "pnpm schema:check && pnpm lint && pnpm test:run && pnpm build"
+  },
+  "dependencies": {
+    "@vue-flow/background": "^1.3.2",
+    "@vue-flow/controls": "^1.1.2",
+    "@vue-flow/core": "^1.42.1",
+    "@vue-flow/minimap": "^1.5.3",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "element-plus": "^2.9.1",
+    "elkjs": "^0.9.3",
+    "pinia": "^2.3.0",
+    "vue": "^3.5.13",
+    "yaml": "^2.6.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.17.0",
+    "@playwright/test": "^1.49.1",
+    "@types/node": "^22.10.2",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/test-utils": "^2.4.6",
+    "eslint": "^9.17.0",
+    "eslint-plugin-vue": "^9.32.0",
+    "globals": "^15.14.0",
+    "jsdom": "^25.0.1",
+    "json-schema-to-typescript": "^15.0.3",
+    "typescript": "~5.7.2",
+    "typescript-eslint": "^8.18.1",
+    "unplugin-vue-components": "^0.28.0",
+    "vite": "^6.0.7",
+    "vitest": "^3.2.7",
+    "vue-tsc": "^2.2.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

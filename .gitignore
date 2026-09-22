@@ -1,0 +1,28 @@
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.local
+.DS_Store
+
+# `vue-tsc --build` writes these beside the tsconfigs: a cache of the last
+# typecheck, not an input to it. Every `pnpm build` rewrites them, so tracking
+# them would put churn in every commit that follows a build and return no
+# information for it.
+#
+# They are read only when `vue-tsc --build` runs *without* `--force`. `pnpm
+# typecheck` always passes it, but an editor or a bare `tsc -b` does not, and a
+# stale cache committed from someone else's machine would have those skip the
+# work the cache exists to make cheaper.
+*.tsbuildinfo
+
+# `docs/` holds the internal design specification, which is deliberately not
+# published. It stays on disk — the code cites it by section number in roughly
+# 190 places — but it never enters the repository.
+#
+# The whole directory is excluded rather than the single file inside it. That is
+# not a style choice: git cannot re-include a file whose parent directory is
+# excluded, so `docs/` followed by `!docs/DESIGN.md` silently keeps nothing.
+# If a file inside has to be tracked, the rule has to start from `docs/*`.
+docs/
