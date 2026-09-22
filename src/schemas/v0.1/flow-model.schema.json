@@ -1,0 +1,803 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ardupilot.org/schema/business-flow/0.1/flow-model.schema.json",
+  "title": "ArduPilot Business Flow Model",
+  "description": "Schema v0.1 for source-evidenced L0-L2 component and data-flow models.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "model",
+    "sources",
+    "data_contracts",
+    "components",
+    "flows",
+    "scenarios"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "0.1"
+    },
+    "model": {
+      "$ref": "#/$defs/modelMetadata"
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "data_contracts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/dataContract"
+      }
+    },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/component"
+      }
+    },
+    "flows": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/flow"
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/scenario"
+      }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$"
+    },
+    "localPortId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "verification": {
+      "type": "string",
+      "enum": [
+        "code_confirmed",
+        "docs_and_code_confirmed",
+        "docs_only",
+        "inferred",
+        "conflict",
+        "human_verified"
+      ]
+    },
+    "modelMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "description",
+        "vehicle",
+        "source_revision",
+        "generated_on",
+        "language",
+        "review_status",
+        "scope"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "title": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "vehicle": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "source_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "generated_on": {
+          "type": "string",
+          "format": "date"
+        },
+        "language": {
+          "type": "string",
+          "pattern": "^[a-z]{2}(?:-[A-Z]{2})?$"
+        },
+        "review_status": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "schema_validated",
+            "evidence_checked",
+            "human_reviewed"
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "levels",
+        "frame_profile",
+        "includes",
+        "excludes",
+        "assumptions"
+      ],
+      "properties": {
+        "levels": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2
+          }
+        },
+        "frame_profile": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "includes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "excludes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "title"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "source_code",
+            "wiki",
+            "generated"
+          ]
+        },
+        "title": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "path": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "symbol": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "line_start": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "line_end": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "section": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "retrieved_on": {
+          "type": "string",
+          "format": "date"
+        },
+        "notes": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "source_code"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "path",
+              "revision"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "wiki"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "url",
+              "retrieved_on"
+            ]
+          }
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "support",
+        "claim"
+      ],
+      "properties": {
+        "source_id": {
+          "$ref": "#/$defs/id"
+        },
+        "support": {
+          "type": "string",
+          "enum": [
+            "direct",
+            "contextual",
+            "contradictory"
+          ]
+        },
+        "claim": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "minimum_inclusive": {
+          "type": "boolean"
+        },
+        "maximum_inclusive": {
+          "type": "boolean"
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "minimum"
+          ]
+        },
+        {
+          "required": [
+            "maximum"
+          ]
+        }
+      ]
+    },
+    "dataField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "type",
+        "description"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/localPortId"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "boolean",
+            "integer",
+            "number",
+            "string",
+            "enum",
+            "vector2",
+            "vector3",
+            "quaternion",
+            "object"
+          ]
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "unit": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "frame": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "range": {
+          "$ref": "#/$defs/range"
+        },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "nullable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "dataContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description",
+        "fields"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/dataField"
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "port": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "direction",
+        "data_contract_id"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/localPortId"
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "direction": {
+          "type": "string",
+          "enum": [
+            "input",
+            "output"
+          ]
+        },
+        "data_contract_id": {
+          "$ref": "#/$defs/id"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "implementationBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "role"
+      ],
+      "properties": {
+        "source_id": {
+          "$ref": "#/$defs/id"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "primary",
+            "supporting",
+            "boundary"
+          ]
+        },
+        "notes": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "level",
+        "scope",
+        "kind",
+        "responsibility",
+        "verification"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "level": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "internal",
+            "external"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "system",
+            "actor",
+            "physical_device",
+            "capability_domain",
+            "input_adapter",
+            "dispatcher",
+            "mode",
+            "mission_executor",
+            "navigator",
+            "estimator",
+            "controller",
+            "mixer",
+            "output_adapter",
+            "safety_monitor",
+            "policy"
+          ]
+        },
+        "parent_id": {
+          "$ref": "#/$defs/id"
+        },
+        "responsibility": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "ports": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/port"
+          }
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "implementation": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/implementationBinding"
+          }
+        },
+        "verification": {
+          "$ref": "#/$defs/verification"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "tags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "level": {
+                "const": 2
+              },
+              "scope": {
+                "const": "internal"
+              }
+            },
+            "required": [
+              "level",
+              "scope"
+            ]
+          },
+          "then": {
+            "required": [
+              "parent_id",
+              "ports",
+              "implementation",
+              "evidence"
+            ]
+          }
+        }
+      ]
+    },
+    "endpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component_id",
+        "port_id"
+      ],
+      "properties": {
+        "component_id": {
+          "$ref": "#/$defs/id"
+        },
+        "port_id": {
+          "$ref": "#/$defs/localPortId"
+        }
+      }
+    },
+    "cadence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "periodic",
+            "event_driven",
+            "on_change",
+            "continuous"
+          ]
+        },
+        "rate_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "constraint": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "flow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "from",
+        "to",
+        "data_contract_id",
+        "transport",
+        "cadence",
+        "transform",
+        "verification",
+        "evidence",
+        "scenario_ids"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "command",
+            "measurement",
+            "state",
+            "event",
+            "control",
+            "actuation",
+            "feedback"
+          ]
+        },
+        "from": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "to": {
+          "$ref": "#/$defs/endpoint"
+        },
+        "data_contract_id": {
+          "$ref": "#/$defs/id"
+        },
+        "transport": {
+          "type": "string",
+          "enum": [
+            "hardware_io",
+            "shared_state",
+            "virtual_call",
+            "direct_call",
+            "direct_setter",
+            "internal_state",
+            "conceptual"
+          ]
+        },
+        "cadence": {
+          "$ref": "#/$defs/cadence"
+        },
+        "transform": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "feedback": {
+          "type": "boolean"
+        },
+        "verification": {
+          "$ref": "#/$defs/verification"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "scenario_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "notes": {
+          "$ref": "#/$defs/nonEmptyString"
+        }
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "description",
+        "default_level",
+        "entry_conditions",
+        "exit_conditions",
+        "component_ids",
+        "flow_ids",
+        "verification",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "name": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "description": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "default_level": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "entry_conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "exit_conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "component_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "flow_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "verification": {
+          "$ref": "#/$defs/verification"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        }
+      }
+    }
+  }
+}
