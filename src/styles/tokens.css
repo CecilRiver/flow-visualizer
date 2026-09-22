@@ -1,0 +1,88 @@
+/*
+ * Single source of truth for every colour, spacing, radius, shadow and font
+ * value used by the application. Components must consume these variables
+ * instead of declaring their own literals (DESIGN.md 16.1).
+ */
+:root {
+  /* Surfaces */
+  --surface-app: #f4f6f8;
+  --surface-panel: #ffffff;
+  --surface-sunken: #eef1f5;
+  --surface-raised: #ffffff;
+  --surface-overlay: rgba(23, 32, 51, 0.45);
+
+  /* Text */
+  --text-primary: #172033;
+  --text-secondary: #526174;
+  --text-muted: #6b7a8d;
+  --text-inverse: #ffffff;
+
+  /* Lines */
+  --border-subtle: #d8dee7;
+  --border-strong: #b6c0cd;
+
+  /* Focus */
+  --focus-ring: #2563eb;
+  --focus-ring-offset: 2px;
+
+  /*
+   * Semantic colour families are NOT declared here.
+   *
+   * `--status-*`, `--flow-*` and `--node-*-accent|surface` are installed at
+   * boot from `src/styles/semanticTokens.ts`, which is the one place the legend,
+   * the node renderers, the edges and the minimap all read (DESIGN.md 15.2).
+   * Declaring them here as well would give the palette two sources that could
+   * drift apart.
+   */
+
+  /* Graph feedback */
+  --graph-selection: #2563eb;
+  --graph-dimmed-opacity: 0.28;
+  --graph-canvas-bg: #fbfcfe;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  /* Elevation */
+  --shadow-sm: 0 1px 2px rgba(23, 32, 51, 0.08);
+  --shadow-md: 0 4px 12px rgba(23, 32, 51, 0.1);
+  --shadow-lg: 0 12px 32px rgba(23, 32, 51, 0.16);
+
+  /* Typography */
+  --font-sans: 'Inter', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', system-ui, -apple-system,
+    'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', ui-monospace, 'SFMono-Regular', Consolas, monospace;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-md: 13px;
+  --font-size-lg: 15px;
+  --font-size-xl: 18px;
+
+  /* Fixed chrome heights, referenced by components instead of raw pixels. */
+  --header-height: 64px;
+  --statusbar-height: 32px;
+  --sidebar-width: 280px;
+  --inspector-width: 420px;
+
+  /* Node footprints used by both ELK and the CSS node renderers. */
+  --node-w-system: 280px;
+  --node-h-system: 130px;
+  --node-w-external: 220px;
+  --node-h-external: 96px;
+  --node-w-domain: 240px;
+  --node-h-domain: 110px;
+  --node-w-component: 240px;
+  --node-h-component: 124px;
+}

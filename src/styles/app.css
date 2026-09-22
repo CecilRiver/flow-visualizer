@@ -1,0 +1,96 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--surface-app);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-md);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The whole graph is read-only business semantics; text selection in the
+ * chrome must stay ordinary, but canvas nodes must not be text-drag-selected. */
+.vue-flow__node {
+  user-select: none;
+}
+
+/* Focus ring must never be removed (DESIGN.md 16.2). */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+/*
+ * Vue Flow's own stylesheet switches the ring off for a focused edge
+ * (`theme-default.css` sets `outline: none` on `.vue-flow__edge:focus`), which
+ * DESIGN.md 16.2 forbids. This file is imported after it, so an
+ * equally-specific rule wins without reaching for `!important`.
+ *
+ * The edge is an SVG `<g>`, so the outline traces the route's bounding box and
+ * the line itself is thickened as well — a keyboard user should be able to see
+ * which of several parallel edges they are on.
+ */
+.vue-flow__edge:focus,
+.vue-flow__edge:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.vue-flow__edge:focus-visible .semantic-edge__line {
+  stroke-width: 3;
+  filter: drop-shadow(0 0 3px var(--focus-ring));
+}
+
+.u-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.u-mono {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+}
+
+.u-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.u-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
