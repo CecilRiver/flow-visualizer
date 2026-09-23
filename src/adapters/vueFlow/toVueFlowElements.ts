@@ -2,13 +2,13 @@ import { MarkerType, type Edge as VueFlowEdge, type Node as VueFlowNode } from '
 
 import {
   COMPONENT_KIND_LABEL,
-  FLOW_KIND_LABEL,
   VERIFICATION_LABEL,
   VERIFICATION_SHORT_LABEL,
   labelFor,
 } from '@/domain/labels'
 import type { Component, GraphLevel, Port } from '@/domain/model'
 import type { ProjectedGraph, ProjectedNode } from '@/domain/view-model'
+import { edgePresentation } from '@/layout/edgePresentation'
 import type { LaidOutEdge, LaidOutNode, LayoutResult } from '@/layout/elkLayout'
 import { sizeForNode } from '@/layout/nodeMetrics'
 import { GROUP_ID_PREFIX } from '@/projection/projectScenario'
@@ -160,6 +160,14 @@ function groupNodeData(group: ProjectedNode, childCount: number): GroupNodeData 
 export interface ToVueFlowOptions {
   graph: ProjectedGraph
   layout: LayoutResult
+  /**
+   * The projection's level, needed to pick the label wording (5.1).
+   *
+   * `ProjectedGraph` does not carry it — the level is a projection *input*, and
+   * adding it to the graph would make two graphs with identical contents
+   * distinguishable by a field nothing else reads.
+   */
+  level: GraphLevel
   componentsById: ReadonlyMap<string, Component>
   /** Projected ids related to the current selection, for highlighting. */
   highlightedNodeIds?: ReadonlySet<string>
@@ -183,11 +191,18 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
   const {
     graph,
     layout,
+    level,
     componentsById,
     highlightedNodeIds,
     highlightedEdgeIds,
     hasSelection = false,
   } = options
+
+  // Names, for the direction clause of an edge's accessible text. Groups are
+  // included because an L2 edge can point at one.
+  const nameById = new Map<string, string>(
+    [...graph.nodes, ...graph.groups].map((node) => [node.id, node.label]),
+  )
 
   const positionById = new Map<string, LaidOutNode>(layout.nodes.map((node) => [node.id, node]))
 
@@ -308,10 +323,18 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
     const route = routeById.get(edge.id)
     const highlighted = highlightedEdgeIds?.has(edge.id) ?? false
 
+    const presentation = edgePresentation({
+      edge,
+      level,
+      nodeLabel: (id) => nameById.get(id),
+    })
+
     const data: SemanticEdgeData = {
       id: edge.id,
       kind: edge.kind,
       label: edge.label,
+      presentation,
+      verification: edge.verification,
       feedback: edge.feedback,
       verificationLabel: labelFor(VERIFICATION_LABEL, edge.verification),
       verificationShortLabel: labelFor(VERIFICATION_SHORT_LABEL, edge.verification),
@@ -366,9 +389,14 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
       class: ['fv-edge', highlighted ? 'is-highlighted' : '', data.dimmed ? 'is-dimmed' : '']
         .filter(Boolean)
         .join(' '),
-      // `edge.kind` is a flow kind, not a component kind: looking it up in the
-      // component table would announce the raw Schema value to a screen reader.
-      ariaLabel: `${labelFor(FLOW_KIND_LABEL, edge.kind)}：${edge.label}`,
+      /*
+       * The full sentence, not the drawn text (5.1).
+       *
+       * At L0/L1 the canvas shows a two-word kind label, and at low zoom it
+       * shows nothing at all. Neither is what a screen reader should hear, so
+       * the accessible name is derived from the projection and never shortened.
+       */
+      ariaLabel: presentation.accessibleText,
     } satisfies VueFlowEdge
   })
 

@@ -3,6 +3,7 @@ import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import {
   VueFlow,
+  useVueFlow,
   type EdgeComponent,
   type EdgeMouseEvent,
   type EdgeTypesObject,
@@ -29,6 +30,7 @@ import ExternalBoundaryNode from './ExternalBoundaryNode.vue'
 import GraphEmptyState from './GraphEmptyState.vue'
 import GraphLegend from './GraphLegend.vue'
 import SemanticFlowEdge from './SemanticFlowEdge.vue'
+import { provideZoomBucket } from './graphRenderContext'
 
 /**
  * The graph surface (DESIGN.md 10.5).
@@ -39,6 +41,28 @@ import SemanticFlowEdge from './SemanticFlowEdge.vue'
  */
 
 const controller = useGraphController()
+
+/**
+ * The Vue Flow instance this canvas owns, addressed by name.
+ *
+ * `useVueFlow()` with no id does not find the store the child `<VueFlow>` will
+ * create — it makes a *new* one. This component is that child's parent, so
+ * there is no providing ancestor to inject from and the bare call would silently
+ * produce a second, empty store. Naming the instance on both sides is what makes
+ * them the same one, and the zoom band, the viewport fit and the rendered
+ * elements all have to be describing the same graph.
+ */
+const FLOW_ID = 'flow-canvas'
+
+const { viewport } = useVueFlow(FLOW_ID)
+
+/*
+ * The band, not the zoom factor. Edges read this to decide whether their labels
+ * are drawn at all; handing them the raw factor would re-render every label on
+ * every wheel tick for a change that only matters at two thresholds
+ * (GRAPH_READABILITY_DESIGN.md 5.3).
+ */
+provideZoomBucket(computed(() => viewport.value.zoom))
 
 /**
  * `markRaw` keeps Vue from deep-reactifying the component definitions on every
@@ -198,6 +222,7 @@ onBeforeUnmount(() => {
     @keydown.capture="onKeydownCapture"
   >
     <VueFlow
+      :id="FLOW_ID"
       :nodes="elements.nodes"
       :edges="elements.edges"
       :node-types="nodeTypes"

@@ -280,6 +280,7 @@ const elements = computed<VueFlowElements>(() => {
   return toVueFlowElements({
     graph: graphRef.value,
     layout: currentLayout,
+    level: useExplorerStore().level,
     componentsById: bundle?.index.componentsById ?? new Map(),
     highlightedNodeIds: highlights.value.nodeIds,
     highlightedEdgeIds: highlights.value.edgeIds,

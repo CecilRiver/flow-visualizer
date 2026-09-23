@@ -71,6 +71,15 @@ describe('edgeTypes', () => {
     id: 'edge.test',
     kind: 'command',
     label: '命令',
+    // Only the fields the edge-type helpers read matter here; the presentation
+    // is a literal because these cases are about routing, not wording.
+    presentation: {
+      compactText: '命令',
+      accessibleText: '命令：命令',
+      verificationMark: '?',
+      maxLines: 1,
+    },
+    verification: 'inferred',
     feedback: false,
     verificationLabel: '推断',
     verificationShortLabel: '推断',

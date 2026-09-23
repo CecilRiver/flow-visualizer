@@ -31,12 +31,25 @@ const verificationStyle = computed(() => ({
     <h3 class="external-node__title u-clamp-2">
       {{ data.label }}
     </h3>
-    <p
+    <!--
+      Same contract as a business node (GRAPH_READABILITY_DESIGN.md 5.4): the
+      truncated line is a summary, and the full sentence stays reachable by
+      hover and by keyboard. A boundary is where a reader most often has to
+      check what an outside actor actually is.
+    -->
+    <ElTooltip
       v-if="data.responsibility !== ''"
-      class="external-node__responsibility u-truncate"
+      :content="data.responsibility"
+      :trigger="['hover', 'focus']"
+      placement="top"
     >
-      {{ data.responsibility }}
-    </p>
+      <p
+        class="external-node__responsibility u-truncate"
+        tabindex="0"
+      >
+        {{ data.responsibility }}
+      </p>
+    </ElTooltip>
 
     <Handle
       id="in"
@@ -85,5 +98,12 @@ const verificationStyle = computed(() => ({
   margin: 0;
   font-size: var(--font-size-xs);
   color: var(--text-secondary);
+}
+
+/* Same as a business node: a visible tab stop, since it carries a tooltip. */
+.external-node__responsibility:focus-visible {
+  outline: 2px solid var(--graph-selection);
+  outline-offset: 1px;
+  border-radius: var(--radius-sm);
 }
 </style>

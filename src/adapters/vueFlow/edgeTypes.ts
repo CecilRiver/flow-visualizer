@@ -1,6 +1,7 @@
 import type { ElkPoint } from 'elkjs/lib/elk-api'
 
-import type { FlowKind } from '@/domain/model'
+import type { FlowKind, Verification } from '@/domain/model'
+import type { EdgePresentation } from '@/layout/edgePresentation'
 
 /**
  * Edge type names and the data the semantic edge renderer needs.
@@ -17,7 +18,22 @@ export type EdgeTypeName = (typeof EDGE_TYPE)[keyof typeof EDGE_TYPE]
 export interface SemanticEdgeData {
   id: string
   kind: FlowKind
+  /**
+   * The projection's own semantic label, unchanged.
+   *
+   * What the canvas draws is `presentation.compactText`; this stays because the
+   * Inspector and the tooltip still quote it verbatim (13.1).
+   */
   label: string
+  /** What the canvas draws and announces, derived in `edgePresentation` (5.1). */
+  presentation: EdgePresentation
+  /**
+   * The most conservative verification state on the edge.
+   *
+   * The renderer needs the state itself, not just its wording, to pick the
+   * colour token for the compact mark (5.2).
+   */
+  verification: Verification
   feedback: boolean
   verificationLabel: string
   verificationShortLabel: string

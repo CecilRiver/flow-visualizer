@@ -66,6 +66,8 @@ function graphAt(level: GraphLevel): ProjectedGraph {
 
 interface BuildOptions {
   layout?: LayoutResult
+  /** Defaults to L2, the projection the app opens on. */
+  level?: GraphLevel
   componentsById?: ReadonlyMap<string, Component>
   highlightedNodeIds?: ReadonlySet<string>
   highlightedEdgeIds?: ReadonlySet<string>
@@ -77,6 +79,7 @@ function build(graph: ProjectedGraph, options: BuildOptions = {}): VueFlowElemen
   return toVueFlowElements({
     graph,
     layout: options.layout ?? computeFallbackLayout(graph),
+    level: options.level ?? 2,
     componentsById: options.componentsById ?? FIXTURE_COMPONENTS_BY_ID,
     highlightedNodeIds: options.highlightedNodeIds,
     highlightedEdgeIds: options.highlightedEdgeIds,
@@ -830,13 +833,21 @@ describe('toVueFlowElements — 节点数据契约', () => {
    * `edge.kind` is a FlowKind, so it must be looked up in FLOW_KIND_LABEL; the
    * component table would miss and announce the raw Schema value to a screen
    * reader.
+   *
+   * GRAPH_READABILITY_DESIGN.md 5.1 puts the direction and the verification in
+   * the same sentence, and that is what makes shortening the drawn label safe:
+   * the canvas can show 控制量 alone only because the accessible name still
+   * says which flow it is, which way it runs and how well it is evidenced.
    */
-  it('边的 ariaLabel 使用 flow kind 的中文标签，不泄露 Schema 原值', () => {
+  it('边的 ariaLabel 使用 flow kind 的中文标签，并给出方向与证据', () => {
     const graph = graphAt(2)
     const elements = build(graph)
-    const edge = edgeOf(elements, edgeOfFlow(graph, 'flow.attitude_rate').id)
+    const flow = edgeOfFlow(graph, 'flow.attitude_rate')
+    const edge = edgeOf(elements, flow.id)
 
-    expect(edge.ariaLabel).toBe(`控制量：${edgeOfFlow(graph, 'flow.attitude_rate').label}`)
+    expect(edge.ariaLabel).toBe(
+      `控制量：${flow.label}，${flow.source} → ${flow.target}，证据：${VERIFICATION_LABEL[flow.verification]}`,
+    )
   })
 })
 

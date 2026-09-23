@@ -47,12 +47,26 @@ const verificationStyle = computed(() => ({
       {{ data.label }}
     </h3>
 
-    <p
+    <!--
+      GRAPH_READABILITY_DESIGN.md 5.4: the ellipsis is the canvas summarising,
+      not data going missing, so the full sentence has to be reachable — by
+      hover *and* by keyboard. `focus` is added to the trigger list because the
+      default is hover only, and the trigger is given a tab stop because a
+      `focus` trigger on an unfocusable element can never fire.
+    -->
+    <ElTooltip
       v-if="data.responsibility !== ''"
-      class="business-node__responsibility u-truncate"
+      :content="data.responsibility"
+      :trigger="['hover', 'focus']"
+      placement="top"
     >
-      {{ data.responsibility }}
-    </p>
+      <p
+        class="business-node__responsibility u-truncate"
+        tabindex="0"
+      >
+        {{ data.responsibility }}
+      </p>
+    </ElTooltip>
 
     <footer class="business-node__foot">
       <span v-if="data.portCounts.inputs > 0">入 {{ data.portCounts.inputs }}</span>
@@ -169,6 +183,17 @@ const verificationStyle = computed(() => ({
   font-size: var(--font-size-sm);
   color: var(--text-secondary);
   flex: 1;
+}
+
+/*
+ * The responsibility line is a tab stop so the keyboard can reach its tooltip,
+ * and a tab stop the user cannot see is worse than none — so it shows focus the
+ * same way the canvas shows selection.
+ */
+.business-node__responsibility:focus-visible {
+  outline: 2px solid var(--graph-selection);
+  outline-offset: 1px;
+  border-radius: var(--radius-sm);
 }
 
 .business-node__foot {
