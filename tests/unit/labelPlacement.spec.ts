@@ -27,9 +27,11 @@ function edge(overrides: Partial<PlacementEdge> & { id: string }): PlacementEdge
   return {
     source: 'a',
     target: 'b',
-    points: [
-      { x: 100, y: 25 },
-      { x: 300, y: 25 },
+    routes: [
+      [
+        { x: 100, y: 25 },
+        { x: 300, y: 25 },
+      ],
     ],
     verificationRank: 0,
     feedback: false,
@@ -82,9 +84,11 @@ describe('placeEdgeLabels 的候选位置', () => {
       edges: [
         edge({
           id: 'e1',
-          points: [
-            { x: 200, y: 25 },
-            { x: 250, y: 25 },
+          routes: [
+            [
+              { x: 200, y: 25 },
+              { x: 250, y: 25 },
+            ],
           ],
         }),
       ],
@@ -116,9 +120,48 @@ describe('placeEdgeLabels 的候选位置', () => {
     expect(label?.lines).toEqual(METRICS.lines)
   })
 
+  it('两段不相邻的路由之间不算作一条线段', () => {
+    // The reason `routes` is a list of polylines rather than one polyline.
+    //
+    // Two sections that do not meet — which an edge crossing a container
+    // boundary can produce — leave a gap the layout never routed. Joining them
+    // would hand the placement pass a 250px "segment" spanning that gap, it
+    // would prefer it as the longest horizontal run, and the label would be
+    // drawn floating over empty canvas between two pieces of the same route.
+    //
+    // The assertion is on where the label landed, not on whether it was drawn:
+    // both versions produce a visible label, and only one of them puts it
+    // somewhere a line exists.
+    const labels = placeEdgeLabels({
+      edges: [
+        edge({
+          id: 'e1',
+          routes: [
+            [
+              { x: 100, y: 25 },
+              { x: 150, y: 25 },
+            ],
+            [
+              { x: 400, y: 25 },
+              { x: 450, y: 25 },
+            ],
+          ],
+        }),
+      ],
+      nodes: [node('a', 0, 0, 100), node('b', 300, 0, 100)],
+      metrics: new Map([['e1', METRICS]]),
+    })
+
+    const label = labels[0]
+    expect(label?.visibleByDefault).toBe(true)
+    // The longest real segment is the first one, centred on 125. The joined
+    // form would have centred the label on 275, in the gap.
+    expect((label?.x ?? 0) + (label?.width ?? 0) / 2).toBeCloseTo(125, 6)
+  })
+
   it('没有可用线段时报 NO_SAFE_SEGMENT，而不是崩溃', () => {
     const labels = placeEdgeLabels({
-      edges: [edge({ id: 'e1', points: [{ x: 10, y: 10 }] })],
+      edges: [edge({ id: 'e1', routes: [[{ x: 10, y: 10 }]] })],
       nodes: TWO_NODES,
       metrics: new Map([['e1', METRICS]]),
     })

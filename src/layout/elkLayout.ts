@@ -3,13 +3,23 @@ import type {
   ElkExtendedEdge,
   ElkNode,
   ElkPoint,
+  ElkPort,
   ELK as ElkInstance,
 } from 'elkjs/lib/elk-api'
 
 import type { ProjectedGraph } from '@/domain/view-model'
 
 import { groupLayoutOptions, rootLayoutOptions } from './elkOptions'
+import { applyFeedbackLanes, orthogonalRoute } from './feedbackLanes'
 import type { EdgeLabelMetrics } from './labelMetrics'
+import {
+  assignRenderPorts,
+  localPortPosition,
+  renderPortId,
+  resolvePortCoordinates,
+  type LayoutPort,
+  type PortSpec,
+} from './layoutPorts'
 import { placeEdgeLabels, type PlacedLabel } from './labelPlacement'
 import { layoutBounds, shapeBounds, type Box } from './layoutBounds'
 import { GROUP_MIN_SIZE, sizeForNode } from './nodeMetrics'
@@ -22,20 +32,56 @@ export interface LaidOutNode {
   height: number
 }
 
+/** One orthogonal piece of a route (GRAPH_READABILITY_DESIGN.md 8). */
+export interface LaidOutEdgeSection {
+  id: string
+  startPoint: ElkPoint
+  /** Orthogonal bend points, in absolute coordinates. */
+  bendPoints: readonly ElkPoint[]
+  endPoint: ElkPoint
+  /**
+   * The sections this one continues from and into.
+   *
+   * ELK only fills these in when an edge comes back as several chained
+   * sections; a single-section edge has neither field, so an empty array here
+   * means "no link", not "a link to nothing".
+   */
+  incomingSections: readonly string[]
+  outgoingSections: readonly string[]
+}
+
 export interface LaidOutEdge {
   id: string
+  /** The projected endpoints, kept so label placement can exempt them (10). */
   source: string
   target: string
-  /** The whole route in absolute coordinates: start, bend points, end. */
-  points: readonly ElkPoint[]
-  /** Orthogonal bend points from ELK, in absolute coordinates. */
-  bendPoints: readonly ElkPoint[]
-  startPoint: ElkPoint
-  endPoint: ElkPoint
+  /**
+   * The route, one entry per ELK section.
+   *
+   * A list rather than one polyline: the sections of a cross-container edge are
+   * not guaranteed to be adjacent, and joining them into a single path would
+   * draw a segment ELK never routed (12.1).
+   */
+  sections: readonly LaidOutEdgeSection[]
+  /** Render ports this edge attaches to (7.3, 9.1). */
+  sourcePortId: string
+  targetPortId: string
+  /**
+   * Carried through from the projection.
+   *
+   * Not in 8's listing, but 9.2's lane rule is a question about a *feedback*
+   * edge, and the answer is only knowable here — after the layout, from the
+   * endpoints. Without the flag the lane pass would have to go back to the
+   * projected graph to ask, and would then be reading two descriptions of the
+   * same edge.
+   */
+  feedback: boolean
 }
 
 export interface LayoutResult {
   nodes: readonly LaidOutNode[]
+  /** Every render port the drawing attaches a route to (8). */
+  ports: readonly LayoutPort[]
   edges: readonly LaidOutEdge[]
   /** Where each label goes, and whether it is drawn at all. */
   labels: readonly PlacedLabel[]
@@ -43,6 +89,16 @@ export interface LayoutResult {
   bounds: Box
   width: number
   height: number
+}
+
+/** One section as a plain polyline, for consumers that read a whole route. */
+export function sectionPolyline(section: LaidOutEdgeSection): ElkPoint[] {
+  return [section.startPoint, ...section.bendPoints, section.endPoint]
+}
+
+/** Every section of an edge as a polyline. */
+export function routePolylines(edge: LaidOutEdge): ElkPoint[][] {
+  return edge.sections.map(sectionPolyline)
 }
 
 /**
@@ -102,13 +158,69 @@ function widestLabel(edgeInputs: ReadonlyMap<string, EdgeLayoutInput>): number {
 export function toElkGraph(
   graph: ProjectedGraph,
   edgeInputs: ReadonlyMap<string, EdgeLayoutInput> = new Map(),
+  specs: readonly PortSpec[] = assignRenderPorts(graph),
 ): ElkNode {
   const groupIds = new Set(graph.groups.map((group) => group.id))
   const maxLabelWidth = widestLabel(edgeInputs)
 
+  const specsByNode = new Map<string, PortSpec[]>()
+  for (const spec of specs) {
+    const bucket = specsByNode.get(spec.nodeId)
+    if (bucket === undefined) specsByNode.set(spec.nodeId, [spec])
+    else bucket.push(spec)
+  }
+
+  /**
+   * The ports of one node, or `undefined` when it has none.
+   *
+   * `size` is passed only for a node whose box is already known — a leaf, whose
+   * footprint is a constant. A container's box is the thing ELK is about to
+   * compute, so its ports cannot be given coordinates in advance; leaving them
+   * off and declaring `FIXED_SIDE` for the node lets ELK place them along the
+   * side, and the resolved coordinates are read back out of the result.
+   */
+  const portsFor = (
+    nodeId: string,
+    size: { width: number; height: number } | null,
+  ): ElkPort[] | undefined => {
+    const nodeSpecs = specsByNode.get(nodeId)
+    if (nodeSpecs === undefined || nodeSpecs.length === 0) return undefined
+    return nodeSpecs.map((spec) => {
+      const port: ElkPort = { id: spec.id, layoutOptions: { 'elk.port.side': spec.side } }
+      if (size !== null) {
+        const local = localPortPosition(spec, size)
+        port.x = local.x
+        port.y = local.y
+      }
+      return port
+    })
+  }
+
+  /**
+   * The constraint that pins a node's ports in place.
+   *
+   * This has to be set on *every* node that holds a port. Left to itself ELK
+   * reshuffles them: measured against elkjs 0.9.3 on a 240×124 node, two ports
+   * declared at y=20 and y=100 came back at 82.7 and 41.3 — reordered as well as
+   * moved, ignoring the coordinates entirely. A constrained node standing beside
+   * an unconstrained one would end up with its route arriving at a different
+   * height from its own port, which is the diagonal stub this pass exists to
+   * remove. Neither choice below leaves a side free: a leaf is `FIXED_POS`, a
+   * container is `FIXED_SIDE`.
+   */
+  const constrainPorts = (isContainer: boolean): Record<string, string> => ({
+    'elk.portConstraints': isContainer ? 'FIXED_SIDE' : 'FIXED_POS',
+  })
+
   const childNodes: ElkNode[] = graph.nodes.map((node) => {
     const size = sizeForNode(node)
-    return { id: node.id, width: size.width, height: size.height }
+    const elkNode: ElkNode = { id: node.id, width: size.width, height: size.height }
+    const ports = portsFor(node.id, size)
+    if (ports !== undefined) {
+      elkNode.ports = ports
+      elkNode.layoutOptions = constrainPorts(false)
+    }
+    return elkNode
   })
 
   // A node can only be nested in a group that is actually present; otherwise it
@@ -131,22 +243,38 @@ export function toElkGraph(
 
   const containers: ElkNode[] = graph.groups.map((group) => {
     const children = childrenByGroup.get(group.id) ?? []
-    return {
+    const ports = portsFor(group.id, null)
+    const container: ElkNode = {
       id: group.id,
-      layoutOptions: groupLayoutOptions(maxLabelWidth),
+      layoutOptions: {
+        ...groupLayoutOptions(maxLabelWidth),
+        ...(ports === undefined ? {} : constrainPorts(true)),
+      },
       width: GROUP_MIN_SIZE.width,
       height: GROUP_MIN_SIZE.height,
       children,
     }
+    if (ports !== undefined) container.ports = ports
+    return container
   })
+
+  // An edge references its ports by id. Falling back to the node id is not a
+  // degraded route — ELK resolves either — but it only happens if a caller
+  // passed specs that do not cover every edge, which `assignRenderPorts` never
+  // produces.
+  const declaredPortIds = new Set(specs.map((spec) => spec.id))
+  const endpointOf = (edgeId: string, end: 'source' | 'target', nodeId: string): string => {
+    const id = renderPortId(edgeId, end)
+    return declaredPortIds.has(id) ? id : nodeId
+  }
 
   // Aggregated edges are declared at the root even when their endpoints live
   // inside a container; ELK routes them across the hierarchy.
   const edges: ElkExtendedEdge[] = graph.edges.map((edge) => {
     const elkEdge: ElkExtendedEdge = {
       id: edge.id,
-      sources: [edge.source],
-      targets: [edge.target],
+      sources: [endpointOf(edge.id, 'source', edge.source)],
+      targets: [endpointOf(edge.id, 'target', edge.target)],
     }
 
     const input = edgeInputs.get(edge.id)
@@ -182,13 +310,22 @@ function pointOf(point: ElkPoint | undefined, offsetX = 0, offsetY = 0): ElkPoin
   return { x: offsetX + (point?.x ?? 0), y: offsetY + (point?.y ?? 0) }
 }
 
-/** Every point of one section, in order, shifted into root coordinates. */
-function sectionPoints(section: ElkEdgeSection, offsetX: number, offsetY: number): ElkPoint[] {
-  return [
-    pointOf(section.startPoint, offsetX, offsetY),
-    ...(section.bendPoints ?? []).map((point) => pointOf(point, offsetX, offsetY)),
-    pointOf(section.endPoint, offsetX, offsetY),
-  ]
+/** One ELK section, shifted into root coordinates. */
+function sectionOf(
+  section: ElkEdgeSection,
+  offsetX: number,
+  offsetY: number,
+): LaidOutEdgeSection {
+  return {
+    id: section.id,
+    startPoint: pointOf(section.startPoint, offsetX, offsetY),
+    bendPoints: (section.bendPoints ?? []).map((point) => pointOf(point, offsetX, offsetY)),
+    endPoint: pointOf(section.endPoint, offsetX, offsetY),
+    // Present only on a section that chains to another; absent means "no link",
+    // so it must not be invented.
+    incomingSections: [...(section.incomingSections ?? [])],
+    outgoingSections: [...(section.outgoingSections ?? [])],
+  }
 }
 
 /** Flattens ELK's hierarchy back into absolute node boxes (DESIGN.md 10.5). */
@@ -212,58 +349,171 @@ function collectNodes(
   }
 }
 
+/** The projected endpoints and render ports of one edge, for `collectEdges`. */
+interface EdgeEndpoints {
+  source: string
+  target: string
+  sourcePortId: string
+  targetPortId: string
+  feedback: boolean
+}
+
 /**
  * Collects edge routes, shifted into root coordinates.
  *
- * Two things the previous version got wrong. All of `sections` are read, not
- * just the first: an edge that crosses a container boundary comes back as
- * several sections, and using only the first drew a line that stopped
- * mid-graph. And the parent offset is accumulated, the same way it is for
- * nodes — without it a route inside a container was offset by the container's
- * own position twice, or not at all.
+ * Two things this has to get right, and the second was wrong until it was
+ * measured.
+ *
+ * Sections are carried through as sections, one entry each, and *not* joined
+ * into a single polyline. The joined form survived only because the sections of
+ * a cross-container edge happen to meet in the fixtures measured so far; the
+ * moment two of them do not, joining them draws a straight line between the end
+ * of one and the start of the next — a segment ELK never routed, presented as
+ * part of the route (12.1). Keeping the split removes the possibility rather
+ * than relying on the fixture.
+ *
+ * And the offset is **per edge**, not the position of the node the edge was
+ * found under. Under `INCLUDE_CHILDREN`, ELK reports every edge at the root of
+ * the result and writes its coordinates in the frame of the two endpoints'
+ * deepest common ancestor. Measured on the L2 fixture: `l2.attitude → l2.rate`
+ * sits entirely inside `ui-group:domain.control`, comes back on `root.edges`,
+ * and its section reads `(300,110) → (460,110)` — the container's own frame.
+ * Adding the container's position gives `(830,630)`, which is the port the route
+ * was asked to reach, to the pixel. An offset accumulated from wherever the
+ * edge was *found* adds nothing, because it is found at the root.
  */
 function collectEdges(
   node: ElkNode,
-  offsetX: number,
-  offsetY: number,
-  edgesById: ReadonlyMap<string, { source: string; target: string }>,
+  endpointsById: ReadonlyMap<string, EdgeEndpoints>,
+  frameOffset: (source: string, target: string) => ElkPoint,
   into: LaidOutEdge[],
 ): void {
   for (const edge of node.edges ?? []) {
-    const sections = edge.sections ?? []
-    if (sections.length === 0) continue
+    const endpoints = endpointsById.get(edge.id)
+    const offset = frameOffset(endpoints?.source ?? '', endpoints?.target ?? '')
+    const sections = (edge.sections ?? []).map((section) => sectionOf(section, offset.x, offset.y))
 
-    const points: ElkPoint[] = []
-    for (const section of sections) {
-      const sectionRoute = sectionPoints(section, offsetX, offsetY)
-      // A section starts where the previous one ended; keeping both would leave
-      // a zero-length segment in the polyline.
-      const first = sectionRoute[0]
-      const last = points[points.length - 1]
-      const start = first !== undefined && last !== undefined && first.x === last.x && first.y === last.y
-        ? sectionRoute.slice(1)
-        : sectionRoute
-      points.push(...start)
-    }
-
-    const start = points[0]
-    const end = points[points.length - 1]
-    if (start === undefined || end === undefined) continue
-
-    const endpoints = edgesById.get(edge.id)
+    // An edge ELK left unrouted is kept rather than dropped: 9.3.1 gives it a
+    // deterministic orthogonal route between its two ports, and an edge that is
+    // silently absent from the drawing is a worse answer than one drawn the
+    // degraded way.
     into.push({
       id: edge.id,
       source: endpoints?.source ?? '',
       target: endpoints?.target ?? '',
-      points,
-      bendPoints: points.slice(1, -1),
-      startPoint: start,
-      endPoint: end,
+      sections,
+      sourcePortId: endpoints?.sourcePortId ?? '',
+      targetPortId: endpoints?.targetPortId ?? '',
+      feedback: endpoints?.feedback ?? false,
     })
   }
 
   for (const child of node.children ?? []) {
-    collectEdges(child, offsetX + (child.x ?? 0), offsetY + (child.y ?? 0), edgesById, into)
+    collectEdges(child, endpointsById, frameOffset, into)
+  }
+}
+
+/**
+ * ELK's own answer for where each port sits, in node-local coordinates.
+ *
+ * Read back rather than recomputed from the node box, because the two agree for
+ * a leaf (which is `FIXED_POS`, so ELK echoes what it was sent) and disagree for
+ * a container: its box is ELK's output, and ELK distributes a `FIXED_SIDE`
+ * node's ports by its own rule. Recomputing would put the drawn handle where the
+ * route does not end.
+ */
+function collectElkPortLocals(node: ElkNode, into: Map<string, ElkPoint>): void {
+  for (const port of node.ports ?? []) {
+    into.set(port.id, { x: port.x ?? 0, y: port.y ?? 0 })
+  }
+  for (const child of node.children ?? []) collectElkPortLocals(child, into)
+}
+
+/**
+ * The coordinate frame an edge's sections are written in.
+ *
+ * Under `INCLUDE_CHILDREN` an edge's points are relative to the deepest node
+ * that contains both of its endpoints — the root when they share no container,
+ * and a container when they are both inside it. Since ELK hands every edge back
+ * at the root, walking outward from one endpoint to the first ancestor the other
+ * also has is what identifies that frame. Taking the *first* match walking
+ * outward is what makes it the deepest one.
+ *
+ * A frame that is one of the endpoints themselves is legitimate: it is what an
+ * edge to or from a container comes back in. The root is not a node, so no match
+ * at all means the frame is the root and the offset is zero.
+ */
+function edgeFrameOffset(
+  graph: ProjectedGraph,
+  boxes: ReadonlyMap<string, { x: number; y: number }>,
+): (source: string, target: string) => ElkPoint {
+  const parentOf = new Map<string, string>()
+  for (const node of graph.nodes) {
+    if (node.parentGroupId !== undefined) parentOf.set(node.id, node.parentGroupId)
+  }
+
+  // The chain starts at the node itself, so a container that *is* an endpoint is
+  // found as its own frame.
+  const chainOf = (id: string): string[] => {
+    const chain: string[] = []
+    // Bounded rather than unbounded: a cycle in `parentGroupId` would otherwise
+    // hang the layout instead of producing a wrong picture.
+    for (let cursor = id, depth = 0; depth < 64; depth += 1) {
+      chain.push(cursor)
+      const parent = parentOf.get(cursor)
+      if (parent === undefined) break
+      cursor = parent
+    }
+    return chain
+  }
+
+  return (source, target) => {
+    if (source === '' || target === '') return { x: 0, y: 0 }
+    const targetChain = new Set(chainOf(target))
+    for (const id of chainOf(source)) {
+      if (!targetChain.has(id)) continue
+      const box = boxes.get(id)
+      return box === undefined ? { x: 0, y: 0 } : { x: box.x, y: box.y }
+    }
+    return { x: 0, y: 0 }
+  }
+}
+
+/**
+ * The orthogonal route used when ELK returned no section for an edge (9.3.1).
+ *
+ * Only a fallback: with `elk.hierarchyHandling: 'INCLUDE_CHILDREN'` every edge
+ * measured comes back routed, so this exists for the edge that does not rather
+ * than as a routine path.
+ */
+function withFallbackRoute(
+  edge: LaidOutEdge,
+  byPortId: ReadonlyMap<string, LayoutPort>,
+): LaidOutEdge {
+  if (edge.sections.length > 0) return edge
+
+  const start = byPortId.get(edge.sourcePortId)
+  const end = byPortId.get(edge.targetPortId)
+  if (start === undefined || end === undefined) return edge
+
+  const points = orthogonalRoute(start, end)
+  const first = points[0]
+  const last = points[points.length - 1]
+  if (first === undefined || last === undefined) return edge
+
+  return {
+    ...edge,
+    sections: [
+      {
+        id: `${edge.id}__fallback`,
+        startPoint: first,
+        bendPoints: points.slice(1, -1),
+        endPoint: last,
+        // Synthesised, so it chains to nothing and nothing claims to chain to it.
+        incomingSections: [],
+        outgoingSections: [],
+      },
+    ],
   }
 }
 
@@ -278,21 +528,58 @@ export async function computeElkLayout(
   edgeInputs: ReadonlyMap<string, EdgeLayoutInput> = new Map(),
 ): Promise<LayoutResult> {
   const elk = await getElk()
-  const laidOut = await elk.layout(toElkGraph(graph, edgeInputs))
+  const specs = assignRenderPorts(graph)
+  const laidOut = await elk.layout(toElkGraph(graph, edgeInputs, specs))
 
   const nodes: LaidOutNode[] = []
   collectNodes(laidOut, laidOut.x ?? 0, laidOut.y ?? 0, nodes)
 
-  const endpoints = new Map(graph.edges.map((edge) => [edge.id, { source: edge.source, target: edge.target }]))
-  const edges: LaidOutEdge[] = []
-  collectEdges(laidOut, laidOut.x ?? 0, laidOut.y ?? 0, endpoints, edges)
+  const elkPortLocals = new Map<string, ElkPoint>()
+  collectElkPortLocals(laidOut, elkPortLocals)
+  const ports = resolvePortCoordinates(
+    specs,
+    elkPortLocals,
+    new Map(nodes.map((node) => [node.id, node])),
+  )
+
+  const endpointsById = new Map<string, EdgeEndpoints>(
+    graph.edges.map((edge) => [
+      edge.id,
+      {
+        source: edge.source,
+        target: edge.target,
+        // The ids the ELK graph was built with, so the ports named here are the
+        // ones the route was actually asked to end at.
+        sourcePortId: renderPortId(edge.id, 'source'),
+        targetPortId: renderPortId(edge.id, 'target'),
+        feedback: edge.feedback,
+      },
+    ]),
+  )
+
+  const routed: LaidOutEdge[] = []
+  collectEdges(
+    laidOut,
+    endpointsById,
+    edgeFrameOffset(graph, new Map(nodes.map((node) => [node.id, node]))),
+    routed,
+  )
+
+  const byPortId = new Map(ports.map((port) => [port.id, port]))
+  const lanes = applyFeedbackLanes(
+    nodes,
+    routed.map((edge) => withFallbackRoute(edge, byPortId)),
+    ports,
+    edgeInputs,
+  )
 
   return {
     nodes,
-    edges,
+    ports: lanes.ports,
+    edges: lanes.edges,
     width: laidOut.width ?? 0,
     height: laidOut.height ?? 0,
-    ...withLabels(graph, nodes, edges, edgeInputs),
+    ...withLabels(graph, nodes, lanes.edges, edgeInputs),
   }
 }
 
@@ -311,7 +598,7 @@ export function withLabels(
   allowLabels = true,
 ): { labels: PlacedLabel[]; bounds: Box } {
   const groupIds = new Set(graph.groups.map((group) => group.id))
-  const pointsByEdge = new Map(edges.map((edge) => [edge.id, edge.points]))
+  const routesByEdge = new Map(edges.map((edge) => [edge.id, routePolylines(edge)]))
 
   const labels = allowLabels
     ? placeEdgeLabels({
@@ -323,14 +610,14 @@ export function withLabels(
           .map((node) => ({ id: node.id, x: node.x, y: node.y, width: node.width, height: node.height })),
         edges: graph.edges.flatMap((edge, index) => {
           const input = edgeInputs.get(edge.id)
-          const points = pointsByEdge.get(edge.id)
-          if (input === undefined || points === undefined) return []
+          const routes = routesByEdge.get(edge.id)
+          if (input === undefined || routes === undefined) return []
           return [
             {
               id: edge.id,
               source: edge.source,
               target: edge.target,
-              points,
+              routes,
               verificationRank: input.placementRank,
               feedback: edge.feedback,
               sourceOrder: index,
@@ -342,9 +629,12 @@ export function withLabels(
     : []
 
   const drawn = labels.filter((label) => label.visibleByDefault)
+  // Every section of every route, including the feedback lanes: a lane that runs
+  // below all the nodes is part of what the reader has to see, so it has to be
+  // inside the bounds the initial fit covers (11).
   const shape = shapeBounds(
     nodes,
-    edges.map((edge) => edge.points),
+    edges.flatMap(routePolylines),
   )
 
   return { labels, bounds: layoutBounds(shape, drawn) }
@@ -380,7 +670,7 @@ export interface LayoutCacheKey {
  * for as long as the reader stayed on the same scenario — and the symptom
  * (stale coordinates, correct everything else) is close to impossible to read.
  */
-export const LAYOUT_SIGNATURE = 'layout-v3-input-signature'
+export const LAYOUT_SIGNATURE = 'layout-v4-ports-and-lanes'
 
 /**
  * A digest of everything the layout actually reads (13.2).

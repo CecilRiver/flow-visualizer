@@ -6,11 +6,12 @@ import {
   VERIFICATION_SHORT_LABEL,
   labelFor,
 } from '@/domain/labels'
-import type { Component, GraphLevel, Port } from '@/domain/model'
+import type { Component, GraphLevel } from '@/domain/model'
 import type { ProjectedGraph, ProjectedNode } from '@/domain/view-model'
 import { edgePresentation } from '@/layout/edgePresentation'
 import type { LaidOutEdge, LaidOutNode, LayoutResult } from '@/layout/elkLayout'
 import type { PlacedLabel } from '@/layout/labelPlacement'
+import { renderPortId } from '@/layout/layoutPorts'
 import { sizeForNode } from '@/layout/nodeMetrics'
 import { GROUP_ID_PREFIX } from '@/projection/projectScenario'
 
@@ -81,27 +82,12 @@ function summarize(description: string | undefined): string {
   return stop === -1 ? trimmed : trimmed.slice(0, stop)
 }
 
-/** Spreads a side's ports evenly so several never stack on one spot. */
-function placeHandles(ports: readonly Port[]): NodePortHandle[] {
-  const counts = {
-    input: ports.filter((port) => port.direction === 'input').length,
-    output: ports.filter((port) => port.direction === 'output').length,
-  }
-  const seen = { input: 0, output: 0 }
-
-  return ports.map((port) => {
-    seen[port.direction] += 1
-    return {
-      id: port.id,
-      name: port.name,
-      direction: port.direction,
-      offset: (seen[port.direction] / (counts[port.direction] + 1)) * 100,
-    }
-  })
-}
-
-function businessNodeData(node: ProjectedNode, component: Component | undefined): BusinessNodeData {
-  const ports = component?.ports ?? []
+function businessNodeData(
+  node: ProjectedNode,
+  component: Component | undefined,
+  ports: readonly NodePortHandle[],
+): BusinessNodeData {
+  const declaredPorts = component?.ports ?? []
   const raw = component?.verification ?? null
   const verification = verificationParts(raw)
 
@@ -118,17 +104,21 @@ function businessNodeData(node: ProjectedNode, component: Component | undefined)
     verificationShortLabel: verification.shortLabel,
     verificationGlyph: verification.glyph,
     portCounts: {
-      inputs: ports.filter((port) => port.direction === 'input').length,
-      outputs: ports.filter((port) => port.direction === 'output').length,
+      inputs: declaredPorts.filter((port) => port.direction === 'input').length,
+      outputs: declaredPorts.filter((port) => port.direction === 'output').length,
     },
-    ports: placeHandles(ports),
+    ports: [...ports],
     hiddenFlowCount: node.hiddenInternalFlowIds.length,
     responsibility: component?.responsibility ?? '',
     summary: summarize(component?.description),
   }
 }
 
-function externalNodeData(node: ProjectedNode, component: Component | undefined): ExternalNodeData {
+function externalNodeData(
+  node: ProjectedNode,
+  component: Component | undefined,
+  ports: readonly NodePortHandle[],
+): ExternalNodeData {
   const raw = component?.verification ?? null
   const verification = verificationParts(raw)
 
@@ -142,14 +132,20 @@ function externalNodeData(node: ProjectedNode, component: Component | undefined)
     verificationShortLabel: verification.shortLabel,
     verificationGlyph: verification.glyph,
     responsibility: component?.responsibility ?? '',
+    ports: [...ports],
   }
 }
 
-function groupNodeData(group: ProjectedNode, childCount: number): GroupNodeData {
+function groupNodeData(
+  group: ProjectedNode,
+  childCount: number,
+  ports: readonly NodePortHandle[],
+): GroupNodeData {
   return {
     id: group.id,
     label: group.label,
     childCount,
+    ports: [...ports],
     // The group stands for exactly one real L1 component; the display prefix is
     // stripped so the Inspector opens the component, not the box.
     domainId: group.id.startsWith(GROUP_ID_PREFIX)
@@ -216,6 +212,34 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
     else bucket.push(node.id)
   }
 
+  /**
+   * The layout's render ports, grouped by node and made node-local.
+   *
+   * The layout reports absolute graph coordinates because everything above this
+   * file is one coordinate space. Vue Flow positions a handle inside the node's
+   * own element, so the node's own placement is subtracted here — and only here,
+   * which is what keeps the drawn handle and the routed endpoint the same point.
+   */
+  const handlesByNode = new Map<string, NodePortHandle[]>()
+  for (const port of layout.ports) {
+    const placed = positionById.get(port.nodeId)
+    // A port on a node the layout did not place cannot be drawn; the node itself
+    // is being skipped for the same reason.
+    if (placed === undefined) continue
+    const handle: NodePortHandle = {
+      id: port.id,
+      end: port.end,
+      side: port.side,
+      x: port.x - placed.x,
+      y: port.y - placed.y,
+      ...(port.semanticPortId === undefined ? {} : { semanticPortId: port.semanticPortId }),
+    }
+    const bucket = handlesByNode.get(port.nodeId)
+    if (bucket === undefined) handlesByNode.set(port.nodeId, [handle])
+    else bucket.push(handle)
+  }
+  const handlesOf = (nodeId: string): readonly NodePortHandle[] => handlesByNode.get(nodeId) ?? []
+
   const nodes: VueFlowNode[] = []
   const missingPositions: string[] = []
 
@@ -242,12 +266,13 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
     const highlighted = highlightedNodeIds?.has(node.id) ?? false
     const dimmed = hasSelection && !highlighted
 
+    const ports = handlesOf(node.id)
     const data =
       type === NODE_TYPE.group
-        ? groupNodeData(node, (childrenByGroup.get(node.id) ?? []).length)
+        ? groupNodeData(node, (childrenByGroup.get(node.id) ?? []).length, ports)
         : type === NODE_TYPE.external
-          ? externalNodeData(node, component)
-          : businessNodeData(node, component)
+          ? externalNodeData(node, component, ports)
+          : businessNodeData(node, component, ports)
 
     const element: VueFlowNode = {
       id: node.id,
@@ -295,31 +320,6 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
 
   const routeById = new Map<string, LaidOutEdge>(layout.edges.map((edge) => [edge.id, edge]))
   const labelByEdgeId = new Map<string, PlacedLabel>(layout.labels.map((label) => [label.edgeId, label]))
-  const nodeById = new Map<string, ProjectedNode>()
-  for (const node of graph.nodes) nodeById.set(node.id, node)
-  for (const group of graph.groups) nodeById.set(group.id, group)
-
-  /**
-   * Picks the handle an edge attaches to (DESIGN.md 10.5).
-   *
-   * Only an L2 edge standing for a single flow keeps the declared port: at
-   * L0/L1 an edge always stands for several flows, and no single port speaks
-   * for the aggregate. The fallback also catches a port the component never
-   * declared, because an edge with a dangling handle would silently vanish
-   * from the drawing rather than show up as a data problem.
-   */
-  const portHandle = (
-    nodeId: string,
-    portId: string | undefined,
-    fallback: string,
-  ): string => {
-    if (portId === undefined) return fallback
-    const node = nodeById.get(nodeId)
-    if (node === undefined || node.level !== 2) return fallback
-    const component = componentsById.get(node.sourceComponentIds[0] ?? '')
-    const declared = component?.ports?.some((port) => port.id === portId) ?? false
-    return declared ? portId : fallback
-  }
 
   const edges: VueFlowEdge[] = graph.edges.map((edge) => {
     const route = routeById.get(edge.id)
@@ -341,9 +341,17 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
       verificationLabel: labelFor(VERIFICATION_LABEL, edge.verification),
       verificationShortLabel: labelFor(VERIFICATION_SHORT_LABEL, edge.verification),
       flowCount: edge.sourceFlowIds.length,
-      bendPoints: route === undefined ? [] : [...route.bendPoints],
-      startPoint: route?.startPoint ?? null,
-      endPoint: route?.endPoint ?? null,
+      // A copy, not the layout's own array: the layout result is cached and
+      // shared, so a renderer holding a reference could edit geometry that the
+      // next reader is still laying out against.
+      sections: (route?.sections ?? []).map((section) => ({
+        id: section.id,
+        startPoint: { ...section.startPoint },
+        bendPoints: section.bendPoints.map((point) => ({ ...point })),
+        endPoint: { ...section.endPoint },
+        incomingSections: [...section.incomingSections],
+        outgoingSections: [...section.outgoingSections],
+      })),
       // A label the layout did not place is `null`, never a zero-sized box at
       // the origin: an origin box would render as a real label in the top-left
       // corner of the drawing, which is exactly the kind of confident wrong
@@ -358,8 +366,16 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
       type: EDGE_TYPE.semantic,
       source: edge.source,
       target: edge.target,
-      sourceHandle: portHandle(edge.source, edge.sourceHandle, 'out'),
-      targetHandle: portHandle(edge.target, edge.targetHandle, 'in'),
+      /*
+       * The render port the layout routed to, never the declared Schema port.
+       *
+       * Both ends of an edge are named here, which is what makes Vue Flow's own
+       * idea of where the edge begins agree with the path drawn below. Where the
+       * declared port still matters — the Inspector, the hand-over to a
+       * configuration — it travels on the port itself as `semanticPortId`.
+       */
+      sourceHandle: renderPortId(edge.id, 'source'),
+      targetHandle: renderPortId(edge.id, 'target'),
       data,
       selectable: true,
       focusable: true,

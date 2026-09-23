@@ -5,6 +5,7 @@ import { EDGE_TYPE } from '@/adapters/vueFlow/edgeTypes'
 import {
   NODE_TYPE,
   type BusinessNodeData,
+  type ExternalNodeData,
   type GroupNodeData,
   type NodePortHandle,
 } from '@/adapters/vueFlow/nodeTypes'
@@ -19,6 +20,7 @@ import type { Component, Flow, FlowKind, GraphLevel, Port } from '@/domain/model
 import type { ProjectedGraph, ProjectedNode } from '@/domain/view-model'
 import { computeFallbackLayout } from '@/layout/fallbackLayout'
 import type { LayoutResult } from '@/layout/elkLayout'
+import { renderPortId } from '@/layout/layoutPorts'
 import { GROUP_PADDING, GROUP_MIN_SIZE, sizeForNode } from '@/layout/nodeMetrics'
 import { GROUP_ID_PREFIX, buildOrderMaps, projectScenario } from '@/projection/projectScenario'
 import { selectScenario } from '@/projection/selectScenario'
@@ -508,12 +510,61 @@ function edgeOfFlow(graph: ProjectedGraph, flowId: string) {
   return edge
 }
 
-describe('toVueFlowElements — handle 选择', () => {
+/** The layout the render ports came from, for a handle-vs-port comparison. */
+function layoutOf(bundle: LoadedBundle, level: GraphLevel): LayoutResult {
+  return computeFallbackLayout(projectBundle(bundle, level))
+}
+
+/**
+ * `LaidOutEdgeSection` with its arrays writable.
+ *
+ * The layout's own type is readonly because a consumer must not edit cached
+ * geometry; the copy test below deliberately edits the copy, so it asserts on
+ * the writable view of the same shape.
+ */
+interface MutableSection {
+  id: string
+  startPoint: { x: number; y: number }
+  bendPoints: Array<{ x: number; y: number }>
+  endPoint: { x: number; y: number }
+  incomingSections: string[]
+  outgoingSections: string[]
+}
+
+function handleOf(
+  elements: VueFlowElements,
+  nodeId: string,
+  /** Vue Flow types an edge handle as nullable, so the lookup accepts both. */
+  id: string | null | undefined,
+): NodePortHandle {
+  const data = dataOf<{ ports: NodePortHandle[] }>(nodeOf(elements, nodeId))
+  const handle = data.ports.find((entry) => entry.id === id)
+  if (handle === undefined) throw new Error(`no handle ${String(id)} on ${nodeId}`)
+  return handle
+}
+
+/**
+ * Render ports at the adapter boundary (GRAPH_READABILITY_DESIGN.md 7.3, 18.3).
+ *
+ * What replaces the old handle tests is not a looser version of them. The old
+ * contract was "an edge names the declared Schema port, or the generic `in`/`out`
+ * when it cannot" — a name that had to be looked up in a *different* geometry,
+ * the percentage distribution the adapter computed for itself. The three could
+ * disagree and nothing noticed.
+ *
+ * Here an edge names the layout's own port id, the node renders a handle under
+ * exactly that id, and the handle's position is that port's position. One
+ * geometry, three readers. The assertions below check the agreement rather than
+ * any one of the three in isolation, because any of them alone can be wrong by
+ * itself and still look right.
+ */
+describe('toVueFlowElements — render ports', () => {
   const bundle = handleBundle()
 
-  it('L2 的单条 flow 保留声明的端口作为 handle ID', () => {
+  it('边连接的是布局端口，声明的 Schema 端口随端口而行', () => {
     const graph = projectBundle(bundle, 2)
-    const elements = build(graph, { componentsById: bundle.index.componentsById })
+    const layout = layoutOf(bundle, 2)
+    const elements = build(graph, { layout, componentsById: bundle.index.componentsById })
 
     const projected = edgeOfFlow(graph, 'flow.ports')
     // Guard: the edge must stand for exactly one flow, or aggregation would
@@ -521,121 +572,273 @@ describe('toVueFlowElements — handle 选择', () => {
     expect(projected.sourceFlowIds).toEqual(['flow.ports'])
 
     const edge = edgeOf(elements, projected.id)
-    expect(edge.sourceHandle).toBe('telemetry')
-    expect(edge.targetHandle).toBe('in.a')
+    expect(edge.sourceHandle).toBe(renderPortId(projected.id, 'source'))
+    expect(edge.targetHandle).toBe(renderPortId(projected.id, 'target'))
+
+    // The declared ports are still reachable — from the port, which is the only
+    // place that still knows them (7.3 rule 4).
+    expect(handleOf(elements, 'ext.gcs', edge.sourceHandle).semanticPortId).toBe('telemetry')
+    expect(handleOf(elements, 'l2.sink', edge.targetHandle).semanticPortId).toBe('in.a')
   })
 
-  it('端口未被组件声明时退回通用 out/in，不让边静默消失', () => {
+  it('handle id ↔ render port id ↔ 坐标三者对齐，每条边都是', () => {
     const graph = projectBundle(bundle, 2)
-    const elements = build(graph, { componentsById: bundle.index.componentsById })
+    const layout = layoutOf(bundle, 2)
+    const elements = build(graph, { layout, componentsById: bundle.index.componentsById })
+
+    const portById = new Map(layout.ports.map((port) => [port.id, port]))
+    const nodeById = new Map(layout.nodes.map((node) => [node.id, node]))
+    expect(portById.size).toBeGreaterThan(0)
+
+    for (const element of elements.edges) {
+      const ends = [
+        [element.sourceHandle, element.source],
+        [element.targetHandle, element.target],
+      ] as const
+
+      for (const [handleId, nodeId] of ends) {
+        const name = `${element.id} 的 ${nodeId} 端`
+        const port = portById.get(handleId ?? '')
+        expect(port, `${name} 引用了一个布局没有产出的 handle`).toBeDefined()
+        expect(port?.nodeId, `${name} 的端口挂在了别的节点上`).toBe(nodeId)
+
+        // The node really renders it, at the layout's coordinate measured from
+        // the node's own box. The adapter subtracts the placement and does
+        // nothing else, so this is what stops a second position formula being
+        // reintroduced here — which is precisely what `placeHandles` was, and
+        // what made the drawn endpoint and the routed one only nearly agree.
+        // That the *route* ends on this same port is asserted in `layout.spec`.
+        const handle = handleOf(elements, nodeId, handleId)
+        const box = nodeById.get(nodeId)
+        expect(box, `${name} 的节点没有布局坐标`).toBeDefined()
+        expect(handle.x, `${name} 的 handle 横坐标`).toBeCloseTo((port?.x ?? 0) - (box?.x ?? 0), 6)
+        expect(handle.y, `${name} 的 handle 纵坐标`).toBeCloseTo((port?.y ?? 0) - (box?.y ?? 0), 6)
+
+        // Vue Flow reads the type off this; a target rendered as a source is an
+        // edge drawn backwards.
+        expect(handle.end).toBe(port?.end)
+      }
+    }
+
+    // An aggregated edge has no single declared port to carry, and the adapter
+    // must not invent one (7.3 rule 4).
+    for (const port of layout.ports) {
+      if (port.semanticPortId === undefined) continue
+      expect(handleOf(elements, port.nodeId, port.id).semanticPortId).toBe(port.semanticPortId)
+    }
+  })
+
+  it('外部边界节点也渲染布局端口，不再把边交给一个不存在的 handle', () => {
+    const graph = projectBundle(bundle, 2)
+    const elements = build(graph, {
+      layout: layoutOf(bundle, 2),
+      componentsById: bundle.index.componentsById,
+    })
+
+    const data = dataOf<ExternalNodeData>(nodeOf(elements, 'ext.gcs'))
+    expect(data.ports).toHaveLength(1)
+    expect(data.ports[0]?.semanticPortId).toBe('telemetry')
+
+    // The defect this closes: the old adapter handed a boundary's edge whatever
+    // port the component declared, and `ExternalBoundaryNode.vue` rendered only
+    // a hardcoded `in`/`out` pair. Vue Flow answers a handle it cannot find by
+    // using the node's centre, so the edge stayed on screen and was quietly
+    // attached to the wrong point. Every handle an edge names now exists.
+    const rendered = new Set(
+      elements.nodes.flatMap((node) =>
+        dataOf<{ ports: NodePortHandle[] }>(node).ports.map((port) => port.id),
+      ),
+    )
+    for (const edge of elements.edges) {
+      expect(rendered.has(edge.sourceHandle ?? ''), `${edge.id} 的 source handle`).toBe(true)
+      expect(rendered.has(edge.targetHandle ?? ''), `${edge.id} 的 target handle`).toBe(true)
+    }
+  })
+
+  it('Schema 未声明的端口照常拿到端口，边既不消失也不落到节点中心', () => {
+    const graph = projectBundle(bundle, 2)
+    const elements = build(graph, {
+      layout: layoutOf(bundle, 2),
+      componentsById: bundle.index.componentsById,
+    })
 
     const projected = edgeOfFlow(graph, 'flow.ghost')
-    // The projection kept the undeclared port; the adapter is what must reject
-    // it, so the two halves of the rule are asserted separately.
+    // The projection kept the undeclared port; the old adapter is what rejected
+    // it, by naming a generic handle that existed on no element.
     expect(projected.sourceFlowIds).toEqual(['flow.ghost'])
     expect(projected.sourceHandle).toBe('ghost')
 
     const edge = edgeOf(elements, projected.id)
-    expect(edge.sourceHandle).toBe('out')
-    // The target port *is* declared, so it must survive next to the fallback.
-    expect(edge.targetHandle).toBe('in')
+    const handle = handleOf(elements, 'l2.sink', edge.sourceHandle)
+    // The name travels along for tracing; it is not what positions the handle.
+    expect(handle.semanticPortId).toBe('ghost')
+    expect(handle.side).toBe('EAST')
+
+    // Two edges leave `l2.sink` eastwards and each gets its own port, so neither
+    // is drawn at the midpoint Vue Flow would have fallen back to.
+    const node = nodeOf(elements, 'l2.sink')
+    const east = dataOf<BusinessNodeData>(node).ports.filter((port) => port.side === 'EAST')
+    expect(east).toHaveLength(2)
+    expect(new Set(east.map((port) => port.y)).size).toBe(2)
+    for (const port of east) expect(port.x).toBeCloseTo(Number(node.width), 6)
   })
 
-  it('L0/L1 的聚合边一律使用通用 out/in，无论投影是否保留了端口', () => {
+  it('L0/L1 的边同样按布局端口连接，语义端口只在投影保留时随行', () => {
     const graph = projectBundle(bundle, 1)
-    const projected = edgeOfFlow(graph, 'flow.ports')
+    const elements = build(graph, {
+      layout: layoutOf(bundle, 1),
+      level: 1,
+      componentsById: bundle.index.componentsById,
+    })
 
-    // The projection kept the source port because `ext.gcs` survives L1, but no
-    // single port speaks for an edge that stands for several flows.
+    const projected = edgeOfFlow(graph, 'flow.ports')
+    // `ext.gcs` survives L1 so its port does; the target was retargeted onto the
+    // domain container, so there is nothing left for the target port to carry.
     expect(projected.sourceHandle).toBe('telemetry')
     expect(projected.targetHandle).toBeUndefined()
 
-    const edge = edgeOf(build(graph, { componentsById: bundle.index.componentsById }), projected.id)
-    expect(edge.sourceHandle).toBe('out')
-    expect(edge.targetHandle).toBe('in')
+    const edge = edgeOf(elements, projected.id)
+    expect(edge.sourceHandle).toBe(renderPortId(projected.id, 'source'))
+    expect(edge.targetHandle).toBe(renderPortId(projected.id, 'target'))
+    expect(handleOf(elements, 'ext.gcs', edge.sourceHandle).semanticPortId).toBe('telemetry')
+    expect(handleOf(elements, 'domain.ctl', edge.targetHandle)).not.toHaveProperty(
+      'semanticPortId',
+    )
   })
 
-  it('同一侧多个端口按均分百分比错开，不会叠在中心', () => {
+  it('同侧的多个端口按均分错开，位置是节点内像素而不是百分比', () => {
     const graph = projectBundle(bundle, 2)
-    const elements = build(graph, { componentsById: bundle.index.componentsById })
-    const data = dataOf<BusinessNodeData>(nodeOf(elements, 'l2.sink'))
+    const elements = build(graph, {
+      layout: layoutOf(bundle, 2),
+      componentsById: bundle.index.componentsById,
+    })
+    const node = nodeOf(elements, 'l2.sink')
+    const data = dataOf<BusinessNodeData>(node)
 
     expect(data.portCounts).toEqual({ inputs: 2, outputs: 1 })
 
-    const handleOf = (id: string): NodePortHandle => {
-      const handle = data.ports.find((entry) => entry.id === id)
-      if (handle === undefined) throw new Error(`no handle for port ${id}`)
-      return handle
-    }
+    const height = Number(node.height)
+    const width = Number(node.width)
+    const east = data.ports.filter((port) => port.side === 'EAST').sort((a, b) => a.y - b.y)
+    const west = data.ports.filter((port) => port.side === 'WEST')
 
-    // Two inputs sit at 1/3 and 2/3 of the side; a lone output sits centred.
-    expect(handleOf('in.a').offset).toBeCloseTo(100 / 3)
-    expect(handleOf('in.b').offset).toBeCloseTo(200 / 3)
-    expect(handleOf('cmd.pitch').offset).toBeCloseTo(50)
-    expect(handleOf('in.a').direction).toBe('input')
-    expect(handleOf('cmd.pitch').direction).toBe('output')
+    // The `(k+1)/(n+1)` shape is unchanged from the old percentage rule; what
+    // changed is the unit — pixels of a box the layout produced, not a fraction
+    // of whatever the browser measured.
+    expect(east).toHaveLength(2)
+    expect(east[0]?.y).toBeCloseTo(height / 3, 6)
+    expect(east[1]?.y).toBeCloseTo((2 * height) / 3, 6)
+    // The lone incoming port is alone on its side, so it sits centred.
+    expect(west).toHaveLength(1)
+    expect(west[0]?.y).toBeCloseTo(height / 2, 6)
+
+    // No port floats inside the box: an edge leaving east hugs the east edge.
+    for (const port of east) {
+      expect(port.x).toBeCloseTo(width, 6)
+      expect(port.end).toBe('source')
+    }
+    for (const port of west) {
+      expect(port.x).toBe(0)
+      expect(port.end).toBe('target')
+    }
   })
 
-  it('端口渲染数据只保留位置信息，不复制 Schema 端口对象', () => {
+  it('端口渲染数据只带渲染所需字段，且不与布局结果共享对象', () => {
     const graph = projectBundle(bundle, 2)
-    const elements = build(graph, { componentsById: bundle.index.componentsById })
+    const layout = layoutOf(bundle, 2)
+    const elements = build(graph, { layout, componentsById: bundle.index.componentsById })
     const data = dataOf<BusinessNodeData>(nodeOf(elements, 'l2.sink'))
 
+    const allowed = new Set(['id', 'end', 'side', 'x', 'y', 'semanticPortId'])
     for (const handle of data.ports) {
-      expect(Object.keys(handle).sort()).toEqual(['direction', 'id', 'name', 'offset'])
+      for (const key of Object.keys(handle)) {
+        expect(allowed.has(key), `端口渲染数据多出了字段 ${key}`).toBe(true)
+      }
+      // `name` and `data_contract_id` live on the Schema port. The drawing has no
+      // use for either, and carrying them would make element state a copy of the
+      // configuration rather than a description of the drawing.
+      expect(handle).not.toHaveProperty('name')
     }
+
+    // A copy, not the layout's own objects: the layout result is cached and
+    // shared, so a renderer holding a reference could edit geometry the next
+    // reader is still laying out against.
+    const before = layout.ports.length
+    expect(data.ports).not.toBe(layout.ports)
+    data.ports.push({ id: 'extra', end: 'source', side: 'EAST', x: 0, y: 0 })
+    expect(layout.ports).toHaveLength(before)
   })
 })
 
-describe('toVueFlowElements — route points', () => {
-  it('bend points 从布局复制，端点透传，且改动元素不会污染布局结果', () => {
+describe('toVueFlowElements — route sections', () => {
+  it('sections 从布局复制，且改动元素不会污染布局结果', () => {
     const graph = graphAt(2)
     const full = computeFallbackLayout(graph)
     const target = edgeOfFlow(graph, 'flow.attitude_rate')
-    const bendPoints = [{ x: 410, y: 220 }, { x: 480, y: 220 }]
+    const sections: MutableSection[] = [
+      {
+        id: `${target.id}__test`,
+        startPoint: { x: 300, y: 200 },
+        bendPoints: [
+          { x: 410, y: 200 },
+          { x: 410, y: 260 },
+        ],
+        endPoint: { x: 600, y: 260 },
+        incomingSections: [],
+        outgoingSections: [],
+      },
+    ]
     const layout: LayoutResult = {
       ...full,
-      edges: full.edges.map((edge) =>
-        edge.id === target.id
-          ? { ...edge, bendPoints, startPoint: { x: 300, y: 200 }, endPoint: { x: 600, y: 260 } }
-          : edge,
-      ),
+      edges: full.edges.map((edge) => (edge.id === target.id ? { ...edge, sections } : edge)),
     }
 
     const elements = build(graph, { layout })
-    const data = dataOf<{ bendPoints: { x: number; y: number }[]; startPoint: unknown; endPoint: unknown }>(
-      edgeOf(elements, target.id),
-    )
+    const data = dataOf<{ sections: MutableSection[] }>(edgeOf(elements, target.id))
 
-    expect(data.bendPoints).toEqual(bendPoints)
-    expect(data.startPoint).toEqual({ x: 300, y: 200 })
-    expect(data.endPoint).toEqual({ x: 600, y: 260 })
+    expect(data.sections).toEqual(sections)
 
-    // A copy, not the layout's own array: mutating what a renderer holds must
-    // not be able to move the next route.
+    // Copies, not the layout's own objects: the layout result is cached and
+    // shared, so a renderer holding a reference could edit geometry the next
+    // reader is still laying out against. Every level is checked, because a
+    // shallow copy would pass on the array and leave the points shared.
     const placed = layout.edges.find((edge) => edge.id === target.id)
-    expect(data.bendPoints).not.toBe(placed?.bendPoints)
-    data.bendPoints.push({ x: 0, y: 0 })
-    expect(placed?.bendPoints).toHaveLength(2)
+    expect(data.sections).not.toBe(placed?.sections)
+    expect(data.sections[0]).not.toBe(placed?.sections[0])
+    expect(data.sections[0]?.startPoint).not.toBe(placed?.sections[0]?.startPoint)
+    expect(data.sections[0]?.bendPoints).not.toBe(placed?.sections[0]?.bendPoints)
+    expect(data.sections[0]?.incomingSections).not.toBe(placed?.sections[0]?.incomingSections)
+
+    data.sections[0]?.bendPoints.push({ x: 0, y: 0 })
+    data.sections.push({
+      id: 'extra',
+      startPoint: { x: 0, y: 0 },
+      bendPoints: [],
+      endPoint: { x: 0, y: 0 },
+      incomingSections: [],
+      outgoingSections: [],
+    })
+    expect(placed?.sections).toHaveLength(1)
+    expect(placed?.sections[0]?.bendPoints).toHaveLength(2)
   })
 
-  it('布局没有折点时 bendPoints 为空，端点回退为 null', () => {
+  it('边不在布局结果里时 sections 为空，而不是编出一条直线', () => {
     const graph = graphAt(2)
     const full = computeFallbackLayout(graph)
     const target = edgeOfFlow(graph, 'flow.rc_attitude')
-    // The fallback layout routes nothing: `SemanticFlowEdge` then falls back to
-    // Vue Flow's own smooth-step path (DESIGN.md 10.5).
-    const layout: LayoutResult = { ...full, edges: full.edges.filter((edge) => edge.id !== target.id) }
+    // An edge with no sections is the degraded case: `SemanticFlowEdge` falls
+    // back to Vue Flow's own smooth-step path (DESIGN.md 10.5) rather than to
+    // endpoints it would have to invent from the layout's boxes.
+    const layout: LayoutResult = {
+      ...full,
+      edges: full.edges.filter((edge) => edge.id !== target.id),
+    }
 
     const elements = build(graph, { layout })
-    const data = dataOf<{ bendPoints: unknown[]; startPoint: unknown; endPoint: unknown; flowCount: number }>(
-      edgeOf(elements, target.id),
-    )
+    const data = dataOf<{ sections: unknown[]; flowCount: number }>(edgeOf(elements, target.id))
 
-    expect(data.bendPoints).toEqual([])
-    expect(data.startPoint).toBeNull()
-    expect(data.endPoint).toBeNull()
-    // Route points are the only thing missing; the business payload stays whole.
+    expect(data.sections).toEqual([])
+    // The route is the only thing missing; the business payload stays whole.
     expect(data.flowCount).toBe(1)
   })
 })
@@ -649,6 +852,7 @@ describe('toVueFlowElements — 嵌套坐标与尺寸', () => {
         { id: CONTROLLER_GROUP, x: 100, y: 50, width: 400, height: 300 },
         { id: 'l2.attitude', x: 140, y: 98, width: 240, height: 124 },
       ],
+      ports: [],
       edges: [],
       labels: [],
       bounds: { x: 0, y: 0, width: 600, height: 400 },
@@ -703,6 +907,7 @@ describe('toVueFlowElements — 嵌套坐标与尺寸', () => {
         { id: 'l2.attitude', x: 0, y: 0, width: 0, height: 0 },
         { id: 'ext.rc', x: 0, y: 0, width: 0, height: 0 },
       ],
+      ports: [],
       edges: [],
       labels: [],
       bounds: { x: 0, y: 0, width: 0, height: 0 },

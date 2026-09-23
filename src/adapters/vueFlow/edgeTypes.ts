@@ -16,6 +16,16 @@ export const EDGE_TYPE = {
 
 export type EdgeTypeName = (typeof EDGE_TYPE)[keyof typeof EDGE_TYPE]
 
+/** One orthogonal piece of a route, as the renderer needs it (8). */
+export interface SemanticEdgeSection {
+  id: string
+  startPoint: ElkPoint
+  bendPoints: ElkPoint[]
+  endPoint: ElkPoint
+  incomingSections: string[]
+  outgoingSections: string[]
+}
+
 export interface SemanticEdgeData {
   id: string
   kind: FlowKind
@@ -40,10 +50,19 @@ export interface SemanticEdgeData {
   verificationShortLabel: string
   /** Number of raw flows aggregated into this edge. */
   flowCount: number
-  /** Orthogonal route from ELK, absolute coordinates. Empty on fallback. */
-  bendPoints: ElkPoint[]
-  startPoint: ElkPoint | null
-  endPoint: ElkPoint | null
+  /**
+   * The route, one entry per orthogonal section, in absolute coordinates.
+   *
+   * A list rather than a single polyline. The sections of an edge that crosses
+   * a container boundary need not meet, and joining them would draw a straight
+   * line between the end of one and the start of the next — a segment the
+   * layout never routed, presented as part of the route (8, 12.1). The renderer
+   * therefore draws each section as its own subpath.
+   *
+   * Empty only when the layout produced nothing at all, which is the case
+   * `hasRoute` reports and 9.3.2's smooth-step answers.
+   */
+  sections: SemanticEdgeSection[]
   /**
    * Where the layout decided this edge's label goes, or `null` when the layout
    * placed none (14).
@@ -65,7 +84,20 @@ export interface SemanticEdgeData {
   dimmed: boolean
 }
 
-/** Vue Flow's own routing is used when ELK produced no route (10.5). */
+/**
+ * Whether the layout produced a route to draw (9.3).
+ *
+ * Counts sections, not bend points. A straight orthogonal route comes back as
+ * one section with **no** `bendPoints` key at all — the field is absent, not
+ * empty — so a predicate reading the bend points would call a perfectly good
+ * straight route unrouted and fall back to Vue Flow's own endpoints, which are
+ * a different geometry from the one the layout computed. That is exactly the
+ * disagreement this pass exists to remove, and it would have survived in the
+ * one case that looks least like a bug.
+ *
+ * When this is false there is no route in the layout at all, and Vue Flow's
+ * smooth-step is the last resort (9.3.2).
+ */
 export function hasRoute(data: SemanticEdgeData): boolean {
-  return data.bendPoints.length > 0
+  return data.sections.length > 0
 }

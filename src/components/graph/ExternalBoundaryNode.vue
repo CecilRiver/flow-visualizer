@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { Handle, Position } from '@vue-flow/core'
+import { Handle } from '@vue-flow/core'
 import { computed } from 'vue'
 
 import type { ExternalNodeData } from '@/adapters/vueFlow/nodeTypes'
 import { verificationTokenName } from '@/styles/semanticTokens'
+
+import { handlePosition, handleStyle } from './handlePlacement'
 
 /**
  * A boundary actor or device outside the system (DESIGN.md 13.2).
@@ -51,15 +53,21 @@ const verificationStyle = computed(() => ({
       </p>
     </ElTooltip>
 
+    <!--
+      Its own render ports, exactly as a business node has (7.3).
+      A boundary used to declare a generic pair named `in` and `out` while the
+      adapter handed its edges whatever handle id the Schema port was called —
+      a handle that existed on no element, which Vue Flow answers by quietly
+      attaching the edge to the node's centre instead.
+    -->
     <Handle
-      id="in"
-      type="target"
-      :position="Position.Left"
-    />
-    <Handle
-      id="out"
-      type="source"
-      :position="Position.Right"
+      v-for="port in data.ports"
+      :id="port.id"
+      :key="port.id"
+      :type="port.end"
+      :position="handlePosition(port.side)"
+      :style="handleStyle(port)"
+      :title="port.semanticPortId ?? ''"
     />
   </div>
 </template>

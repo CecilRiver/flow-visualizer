@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { Handle, Position } from '@vue-flow/core'
+import { Handle } from '@vue-flow/core'
 import { computed } from 'vue'
 
 import type { BusinessNodeData } from '@/adapters/vueFlow/nodeTypes'
 import { verificationTokenName } from '@/styles/semanticTokens'
+
+import { handlePosition, handleStyle } from './handlePlacement'
 
 /**
  * A business component at its own level (DESIGN.md 13.2).
@@ -15,9 +17,6 @@ const props = defineProps<{
   data: BusinessNodeData
   selected?: boolean
 }>()
-
-const inputs = computed(() => props.data.ports.filter((port) => port.direction === 'input'))
-const outputs = computed(() => props.data.ports.filter((port) => port.direction === 'output'))
 
 const verificationStyle = computed(() => ({
   '--node-accent': `var(${verificationTokenName(props.data.verification)})`,
@@ -79,42 +78,23 @@ const verificationStyle = computed(() => ({
       </span>
     </footer>
 
-    <!-- One handle per declared port, so an edge keeps its real endpoint. -->
-    <Handle
-      v-for="port in inputs"
-      :id="port.id"
-      :key="`in-${port.id}`"
-      type="target"
-      :position="Position.Left"
-      :style="{ top: `${port.offset}%` }"
-      :title="port.name"
-    />
-    <Handle
-      v-for="port in outputs"
-      :id="port.id"
-      :key="`out-${port.id}`"
-      type="source"
-      :position="Position.Right"
-      :style="{ top: `${port.offset}%` }"
-      :title="port.name"
-    />
-
     <!--
-      Generic handles for aggregated edges. They must exist or those edges would
-      not render at all, but they are not drawn: at this level an aggregate has
-      no single port to point at, so a visible dot would claim one does.
+      One handle per render port, at the coordinate the layout routed to (7.3).
+
+      There is no generic pair any more, and no handle for a declared port that
+      no edge reaches. An aggregate edge names the render ports of its own two
+      ends like every other edge, so it needs nothing special — and the handles
+      that used to exist for it were the ones an edge could reference without
+      there being anything to reference.
     -->
     <Handle
-      id="in"
-      type="target"
-      :position="Position.Left"
-      class="business-node__aggregate-handle"
-    />
-    <Handle
-      id="out"
-      type="source"
-      :position="Position.Right"
-      class="business-node__aggregate-handle"
+      v-for="port in data.ports"
+      :id="port.id"
+      :key="port.id"
+      :type="port.end"
+      :position="handlePosition(port.side)"
+      :style="handleStyle(port)"
+      :title="port.semanticPortId ?? ''"
     />
   </div>
 </template>
@@ -206,9 +186,5 @@ const verificationStyle = computed(() => ({
 .business-node__hidden {
   margin-left: auto;
   font-style: italic;
-}
-
-.business-node__aggregate-handle {
-  opacity: 0;
 }
 </style>

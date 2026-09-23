@@ -67,21 +67,34 @@ const lines = computed(() => {
 })
 
 /**
- * Route through ELK's bend points when it produced one; otherwise a straight
- * line between the handles.
+ * The layout's own route, one subpath per section (9.1).
  *
- * There is no smooth-step fallback here — `hasRoute` is false exactly when the
- * layout produced nothing, and Vue Flow's own router is not consulted.
+ * Every point comes from the layout result, including the two ends. They are
+ * not taken from Vue Flow's `sourceX`/`sourceY`/`targetX`/`targetY`, which are
+ * measured from the handle elements in the DOM: mixing the two geometries is
+ * how an edge came to be drawn from somewhere other than the point the layout
+ * routed to, and it showed up as a short diagonal near the node.
+ *
+ * Each section starts its own `M`, so two sections that do not meet are drawn
+ * as two lines rather than joined by one that was never routed (12.1). The
+ * path is unfilled, so multiple subpaths are exactly what is wanted.
+ *
+ * Vue Flow's endpoints are the final fallback and nothing else (9.3.2): when
+ * the layout produced no sections there is no route to draw, and a straight
+ * line between the handles is a more honest answer than no line at all.
  */
 const path = computed(() => {
-  const points = props.data.bendPoints
   if (!hasRoute(props.data)) {
     return `M ${props.sourceX},${props.sourceY} L ${props.targetX},${props.targetY}`
   }
-  const segments = [`M ${props.sourceX},${props.sourceY}`]
-  for (const point of points) segments.push(`L ${point.x},${point.y}`)
-  segments.push(`L ${props.targetX},${props.targetY}`)
-  return segments.join(' ')
+  return props.data.sections
+    .map((section) => {
+      const commands = [`M ${section.startPoint.x},${section.startPoint.y}`]
+      for (const point of section.bendPoints) commands.push(`L ${point.x},${point.y}`)
+      commands.push(`L ${section.endPoint.x},${section.endPoint.y}`)
+      return commands.join(' ')
+    })
+    .join(' ')
 })
 
 const strokeDash = computed(() =>
@@ -131,6 +144,7 @@ const markStyle = computed(() => ({
 <template>
   <g
     class="semantic-edge"
+    :data-edge-id="id"
     :class="{
       'is-highlighted': data.highlighted,
       'is-dimmed': data.dimmed,
@@ -143,6 +157,12 @@ const markStyle = computed(() => ({
       `pointer-events: none` (6.3), so a tooltip anchored to it could never be
       reached; SVG's own `<title>` gives the edge a native hover tooltip with no
       JavaScript, and says exactly what the accessible name already says.
+    -->
+    <!--
+      `data-edge-id` is on both this group and the label below, so the geometry
+      measurement can name the edge it is complaining about. Without it a
+      failure over a route in the wrong place would report coordinates and no
+      identity.
     -->
     <title>{{ presentation.accessibleText }}</title>
 

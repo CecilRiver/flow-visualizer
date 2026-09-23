@@ -45,6 +45,17 @@ export const GRAPH_READABILITY = {
     /** Distance between two feedback lanes. */
     laneGap: 30,
   },
+  routing: {
+    /**
+     * How far a route runs straight out of a port before it may turn.
+     *
+     * Only visible on a route that has to double back: on an ordinary forward
+     * run the stub is collinear with the run that follows it and is dropped as
+     * a non-bend. Where it earns its keep is a SOUTH port, which would
+     * otherwise be left by a segment running along the node's own bottom edge.
+     */
+    portStub: 16,
+  },
   viewport: {
     topPadding: 40,
     rightPadding: 64,

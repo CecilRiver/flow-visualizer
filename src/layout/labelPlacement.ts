@@ -36,8 +36,16 @@ export interface PlacementEdge {
   id: string
   source: string
   target: string
-  /** The routed path: start point, bend points, end point. */
-  points: readonly Point[]
+  /**
+   * The routed path, one polyline per ELK section.
+   *
+   * A list of polylines rather than one flat list of points, because the
+   * sections of an edge that crosses a container boundary are *not* guaranteed
+   * to meet: concatenating them would hand this pass a segment running from the
+   * end of one section to the start of the next, and it would happily anchor a
+   * label to a line that is drawn nowhere.
+   */
+  routes: readonly (readonly Point[])[]
   /** Severity of the edge's verification; lower is more severe, so it places first. */
   verificationRank: number
   feedback: boolean
@@ -115,6 +123,17 @@ function segmentsOf(points: readonly Point[]): Segment[] {
 }
 
 /**
+ * Every segment of every route, and nothing between the routes.
+ *
+ * `flatMap` over the polylines rather than one pass over their concatenation:
+ * the join between two sections is not a segment, and treating it as one is
+ * exactly how a label ends up floating over empty canvas.
+ */
+function segmentsOfRoutes(routes: readonly (readonly Point[])[]): Segment[] {
+  return routes.flatMap(segmentsOf)
+}
+
+/**
  * Candidate positions, in the order the design document lays out (10):
  * the longest horizontal segment above then below, the next longest the same
  * way, then the longest vertical segment to the right then to the left.
@@ -184,7 +203,7 @@ export function placeEdgeLabels(input: PlaceEdgeLabelsInput): PlacedLabel[] {
   const { edges, nodes, metrics } = input
   const shape = shapeBounds(
     nodes,
-    edges.map((edge) => edge.points),
+    edges.flatMap((edge) => edge.routes),
   )
   const usable: Box = {
     x: shape.x - BOUNDS_MARGIN.left,
@@ -201,7 +220,7 @@ export function placeEdgeLabels(input: PlaceEdgeLabelsInput): PlacedLabel[] {
     if (size === undefined) continue
 
     const box = { width: size.width, height: size.height }
-    const candidates = candidateBoxes(box, segmentsOf(edge.points))
+    const candidates = candidateBoxes(box, segmentsOfRoutes(edge.routes))
 
     let chosen: Box | null = null
     let issue: PlacementIssue = 'NO_SAFE_SEGMENT'

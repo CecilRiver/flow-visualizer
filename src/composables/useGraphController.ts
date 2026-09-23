@@ -101,7 +101,15 @@ async function runLayout(): Promise<void> {
   const bundle = catalog.activeBundle
 
   if (graph.nodes.length === 0 && graph.groups.length === 0) {
-    layoutRef.value = { nodes: [], edges: [], labels: [], bounds: EMPTY_BOUNDS, width: 0, height: 0 }
+    layoutRef.value = {
+      nodes: [],
+      ports: [],
+      edges: [],
+      labels: [],
+      bounds: EMPTY_BOUNDS,
+      width: 0,
+      height: 0,
+    }
     layoutUsedFallbackRef.value = false
     return
   }

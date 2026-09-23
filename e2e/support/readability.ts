@@ -40,6 +40,21 @@ export interface LabelBox extends Rect {
   target: string
 }
 
+/** One drawn edge line, sampled along its own path. */
+export interface DrawnLine {
+  edgeId: string
+  feedback: boolean
+  /**
+   * Points along the line as it is actually painted, in viewport coordinates.
+   *
+   * Read back from the SVG geometry rather than from the layout result: the
+   * whole point is to measure the line the reader sees, which is the one thing
+   * the layout cannot vouch for. `getScreenCTM` folds in Vue Flow's viewport
+   * transform, so these are directly comparable with `getBoundingClientRect`.
+   */
+  points: Array<{ x: number; y: number }>
+}
+
 /** Two things that must not share pixels, and the area they do share. */
 export interface Overlap {
   kind: 'label-node' | 'label-label'
@@ -111,6 +126,54 @@ export async function collectNodeBoxes(page: Page): Promise<NodeBox[]> {
       ]
     }),
   )
+}
+
+/**
+ * Every drawn edge line, sampled along the path the browser actually paints.
+ *
+ * Sampling rather than reading the endpoints: the claim being checked is about
+ * where the *whole* line runs, and a route that leaves a node's side, drops into
+ * the feedback channel and comes back has endpoints exactly where a direct route
+ * would have had them. Only the points in between tell the two apart.
+ *
+ * The step is 8px of path. Finer would measure antialiasing; coarser could step
+ * over the dip a lane is made of.
+ */
+export async function collectDrawnLines(page: Page): Promise<DrawnLine[]> {
+  return page.evaluate(() => {
+    const lines: Array<{
+      edgeId: string
+      feedback: boolean
+      points: Array<{ x: number; y: number }>
+    }> = []
+
+    for (const group of document.querySelectorAll('.semantic-edge')) {
+      const path = group.querySelector<SVGPathElement>('.semantic-edge__line')
+      if (path === null) continue
+      const matrix = path.getScreenCTM()
+      if (matrix === null) continue
+      const total = path.getTotalLength()
+      // A zero-length path has no route to measure; reporting a single point at
+      // the origin would invent geometry.
+      if (total === 0) continue
+
+      const steps = Math.max(2, Math.ceil(total / 8))
+      const points: Array<{ x: number; y: number }> = []
+      for (let step = 0; step <= steps; step += 1) {
+        const local = path.getPointAtLength((total * step) / steps)
+        const screen = new DOMPoint(local.x, local.y).matrixTransform(matrix)
+        points.push({ x: screen.x, y: screen.y })
+      }
+
+      lines.push({
+        edgeId: group.getAttribute('data-edge-id') ?? '',
+        feedback: group.classList.contains('is-feedback'),
+        points,
+      })
+    }
+
+    return lines
+  })
 }
 
 /**

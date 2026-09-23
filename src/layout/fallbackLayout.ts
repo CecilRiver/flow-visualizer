@@ -1,6 +1,15 @@
+import type { ElkPoint } from 'elkjs/lib/elk-api'
+
 import type { ProjectedGraph } from '@/domain/view-model'
 
 import { withLabels, type LaidOutEdge, type LaidOutNode, type LayoutResult } from './elkLayout'
+import { applyFeedbackLanes, orthogonalRoute } from './feedbackLanes'
+import {
+  assignRenderPorts,
+  localPortPosition,
+  renderPortId,
+  resolvePortCoordinates,
+} from './layoutPorts'
 import { GROUP_PADDING, GROUP_MIN_SIZE, sizeForNode } from './nodeMetrics'
 
 /**
@@ -250,32 +259,74 @@ export function computeFallbackLayout(graph: ProjectedGraph): LayoutResult {
   const width = nodes.reduce((max, node) => Math.max(max, node.x + node.width), 0) + MARGIN
   const height = nodes.reduce((max, node) => Math.max(max, node.y + node.height), 0) + MARGIN
 
-  // No routing is attempted here. `SemanticFlowEdge` draws the line from Vue
-  // Flow's own `sourceX`/`sourceY`/`targetX`/`targetY`, which Vue Flow computes
-  // from the node boxes above; the route fields below are therefore empty, and
-  // this layout's `points` must not be read as a path.
+  const byNodeId = new Map(nodes.map((node) => [node.id, node]))
+
+  // Real ports, and real routes through them.
   //
-  // The zeros are a placeholder, not an origin. Anything that starts consuming
-  // `startPoint`/`endPoint` as geometry will silently draw every edge out of the
-  // top-left corner — so a caller wanting real endpoints has to take them from
-  // Vue Flow, and giving the fallback real routing is a separate piece of work.
-  const edges: LaidOutEdge[] = graph.edges.map((edge) => ({
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    points: [],
-    startPoint: { x: 0, y: 0 },
-    endPoint: { x: 0, y: 0 },
-    bendPoints: [],
-  }))
+  // This used to hand out `{x: 0, y: 0}` for both endpoints with a comment
+  // warning that anything reading them as geometry would draw every edge out of
+  // the top-left corner. That comment was correct and this pass is the consumer
+  // it was warning about. The fallback knows every box it just placed, so a port
+  // position is available here without a sentinel and without guessing.
+  const specs = assignRenderPorts(graph)
+  const localByPortId = new Map<string, ElkPoint>()
+  for (const spec of specs) {
+    const box = byNodeId.get(spec.nodeId)
+    if (box === undefined) continue
+    localByPortId.set(spec.id, localPortPosition(spec, box))
+  }
+  const ports = resolvePortCoordinates(specs, localByPortId, byNodeId)
+  const byPortId = new Map(ports.map((port) => [port.id, port]))
+
+  const routed: LaidOutEdge[] = graph.edges.map((edge) => {
+    const sourcePortId = renderPortId(edge.id, 'source')
+    const targetPortId = renderPortId(edge.id, 'target')
+    const start = byPortId.get(sourcePortId)
+    const end = byPortId.get(targetPortId)
+
+    // 9.3.1: two render ports are all a deterministic orthogonal route needs.
+    // Drawing straight between the ports is what keeps the degraded picture free
+    // of the diagonal stubs the layout proper exists to avoid.
+    const points =
+      start === undefined || end === undefined
+        ? []
+        : orthogonalRoute(start, end, start.side, end.side)
+    const first = points[0]
+    const last = points[points.length - 1]
+
+    return {
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      feedback: edge.feedback,
+      sourcePortId,
+      targetPortId,
+      sections:
+        first === undefined || last === undefined
+          ? []
+          : [
+              {
+                id: `${edge.id}__fallback`,
+                startPoint: first,
+                bendPoints: points.slice(1, -1),
+                endPoint: last,
+                incomingSections: [],
+                outgoingSections: [],
+              },
+            ],
+    }
+  })
+
+  // No label metrics are passed, so the lanes are spaced by the floor gap alone
+  // — which is all a layout that draws no labels needs.
+  const lanes = applyFeedbackLanes(nodes, routed, ports, new Map())
 
   // Labels are not placed, and none are marked visible (DESIGN.md 14). Label
-  // geometry is derived from a route, and there are none: emitting boxes here
-  // would mean inventing coordinates for lines that were never drawn. The
-  // reader loses the inline text but keeps every node, and the edge data still
-  // carries the presentation text for the Inspector — which is the honest
-  // outcome. A degraded layout must not look like a finished one.
-  const { labels, bounds } = withLabels(graph, nodes, edges, new Map(), false)
+  // collision cannot be checked against a layout whose routes are this
+  // approximate, so the reader loses the inline text but keeps every node, and
+  // the edge data still carries the presentation text for the Inspector — which
+  // is the honest outcome. A degraded layout must not look like a finished one.
+  const { labels, bounds } = withLabels(graph, nodes, lanes.edges, new Map(), false)
 
-  return { nodes, edges, labels, bounds, width, height }
+  return { nodes, ports: lanes.ports, edges: lanes.edges, labels, bounds, width, height }
 }

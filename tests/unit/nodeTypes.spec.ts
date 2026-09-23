@@ -84,9 +84,7 @@ describe('edgeTypes', () => {
     verificationLabel: '推断',
     verificationShortLabel: '推断',
     flowCount: 1,
-    bendPoints: [],
-    startPoint: null,
-    endPoint: null,
+    sections: [],
     // No layout ran, so no label was placed. A fixture that invented a box here
     // would be asserting on geometry this file has no interest in.
     labelBox: null,
@@ -94,11 +92,30 @@ describe('edgeTypes', () => {
     dimmed: false,
   }
 
-  it('hasRoute 只在 ELK 给出折点时为真', () => {
-    // The renderer switches on this: no bend points means Vue Flow's own
-    // smooth-step routing draws the line (DESIGN.md 10.5).
-    expect(hasRoute(base)).toBe(false)
-    expect(hasRoute({ ...base, bendPoints: [{ x: 10, y: 10 }] })).toBe(true)
-  })
+  /** A section with no bend points at all — a straight orthogonal run (8). */
+  const STRAIGHT = {
+    id: 'e1_s0',
+    startPoint: { x: 0, y: 0 },
+    bendPoints: [],
+    endPoint: { x: 100, y: 0 },
+    incomingSections: [],
+    outgoingSections: [],
+  }
 
+  it('hasRoute 看的是 section，不是折点', () => {
+    // The renderer switches on this: with no sections there is nothing to draw
+    // and Vue Flow's smooth-step is the last resort (9.3.2).
+    expect(hasRoute(base)).toBe(false)
+
+    // And a straight run counts. ELK returns it as one section with the
+    // `bendPoints` key *absent* rather than empty, so a predicate reading the
+    // bend points would call this unrouted — and the renderer would then fall
+    // back to Vue Flow's endpoints, which are a different geometry from the one
+    // the layout computed. That is precisely the disagreement 9.1 removes, and
+    // it would have survived in the case that looks least like a bug.
+    expect(hasRoute({ ...base, sections: [STRAIGHT] })).toBe(true)
+    expect(hasRoute({ ...base, sections: [{ ...STRAIGHT, bendPoints: [{ x: 50, y: 0 }] }] })).toBe(
+      true,
+    )
+  })
 })

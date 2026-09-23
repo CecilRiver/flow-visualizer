@@ -2,7 +2,12 @@ import { expect, test, type Page } from '@playwright/test'
 
 import { installDirectoryPickerMock } from './support/directoryPicker'
 import { loadFixtureFolder } from './support/fixtures'
-import { collectNodeBoxes, formatOverlaps, measureReadability } from './support/readability'
+import {
+  collectDrawnLines,
+  collectNodeBoxes,
+  formatOverlaps,
+  measureReadability,
+} from './support/readability'
 
 /**
  * GRAPH_READABILITY_DESIGN.md 17.4: the drawn graph is measured, not eyeballed.
@@ -216,6 +221,68 @@ test.describe('图可读性：标签几何', () => {
       ratio,
       `切换层级后图形只占画布宽度的 ${ratio.toFixed(2)}，说明仍在用上一层的视口`,
     ).toBeGreaterThan(FILL_BOUND)
+  })
+
+  test('反馈边画在所有节点下方，与前向路线分开', async ({ page }) => {
+    /*
+     * GRAPH_READABILITY_DESIGN.md 9.2, 18.4.
+     *
+     * Asserted on the painted path, not on the layout result. A lane is a
+     * *routing* decision — source and target meet the nodes at their bottom
+     * edges and the line between them drops below the whole drawing — and both
+     * halves of that are visible in the SVG `d` and nowhere else. The layout
+     * could hold a perfectly good lane and the renderer still draw a straight
+     * line between the same two endpoints, which is exactly the failure a
+     * layout-only assertion cannot see.
+     *
+     * Viewport coordinates throughout: `getScreenCTM` folds the current pan and
+     * zoom into the path points, so they are directly comparable with the node
+     * rects. No zooming in is needed either, since lines are drawn at every
+     * zoom — unlike the labels, whose tests have to zoom first (see the header).
+     */
+    await switchToLevel(page, 2)
+
+    const [lines, nodes] = await Promise.all([collectDrawnLines(page), collectNodeBoxes(page)])
+    expect(nodes.length).toBeGreaterThan(0)
+
+    const deepestOf = (line: (typeof lines)[number]): number =>
+      Math.max(...line.points.map((point) => point.y))
+    const deepestNode = Math.max(...nodes.map((node) => node.y + node.height))
+
+    // Not every feedback edge gets a lane, and that is 9.2's last paragraph
+    // rather than an omission: only one that doubles back — source to the right
+    // of target — needs the bottom channel. One that already runs forwards keeps
+    // the ordinary ELK route, and forcing it into a lane would draw a detour
+    // round the whole graph to say what a straight line already said.
+    //
+    // This model has exactly one of each, measured: at L2
+    // `actuation.motor_mixer → control.attitude_rate` doubles back (source at
+    // x=2355, target at 1865) and `estimation.attitude → control.attitude_rate`
+    // does not. So the two halves below are both about real edges, not about an
+    // empty list.
+    const feedback = lines.filter((line) => line.feedback)
+    expect(feedback.length, 'L2 没有画出任何反馈边，这条断言就失去意义').toBeGreaterThan(0)
+
+    const laned = feedback.filter((line) => deepestOf(line) > deepestNode)
+    expect(
+      laned.map((line) => line.edgeId),
+      '折返的反馈边没有走到所有节点下方的独立通道',
+    ).not.toEqual([])
+
+    // The other half of "separated": nothing else is in there. A channel the
+    // forward traffic also uses would separate nothing, and the crossing it
+    // exists to remove would be back.
+    const intruding: string[] = []
+    for (const line of lines) {
+      if (line.feedback) continue
+      const deepest = deepestOf(line)
+      if (deepest > deepestNode) {
+        intruding.push(
+          `${line.edgeId} 最低到 y=${deepest.toFixed(1)}，越过了节点底部 ${deepestNode.toFixed(1)}`,
+        )
+      }
+    }
+    expect(intruding, '前向边进入了反馈通道').toEqual([])
   })
 
   test('首次 fit 由图形本身决定，没有被标签撑出的 bounds 压扁', async ({ page }) => {

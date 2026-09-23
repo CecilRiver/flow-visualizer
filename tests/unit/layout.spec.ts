@@ -9,6 +9,7 @@ import {
   layoutCacheKey,
   layoutGraph,
   layoutInputSignature,
+  sectionPolyline,
   toElkGraph,
 } from '@/layout/elkLayout'
 import { assignColumns, computeFallbackLayout } from '@/layout/fallbackLayout'
@@ -18,6 +19,7 @@ import type { FlowInit } from '../fixtures/buildModel'
 
 import { expectNoOverlaps, overlapArea } from './helpers/geometry'
 import { projectFixture } from './helpers/projectFixture'
+import { expectEndpointsOnPorts, expectOrthogonal } from './helpers/routes'
 
 /** The canonical flow set, kept separate so a test can vary exactly one field. */
 const BASE_FLOWS: readonly FlowInit[] = [
@@ -115,14 +117,18 @@ describe('computeElkLayout', () => {
     // The assertion here used to be `bendPoints.length >= 0`, which holds for
     // every array and so could never fail. Orthogonal routing means at least
     // one edge has to turn, and every turn it reports has to be a real point.
-    const routed = result.edges.filter((edge) => edge.bendPoints.length > 0)
+    const routed = result.edges.filter((edge) =>
+      edge.sections.some((section) => section.bendPoints.length > 0),
+    )
     expect(routed.length).toBeGreaterThan(0)
     for (const edge of routed) {
-      for (const point of edge.bendPoints) {
-        expect(
-          Number.isFinite(point.x) && Number.isFinite(point.y),
-          `non-finite bend point on ${edge.id}`,
-        ).toBe(true)
+      for (const section of edge.sections) {
+        for (const point of section.bendPoints) {
+          expect(
+            Number.isFinite(point.x) && Number.isFinite(point.y),
+            `non-finite bend point on ${edge.id}`,
+          ).toBe(true)
+        }
       }
     }
 
@@ -186,15 +192,110 @@ describe('toElkGraph 交给 ELK 的输入', () => {
   it('读全部 sections，不是只读第一段', async () => {
     // A route that crosses a container boundary comes back in pieces. Reading
     // only `sections[0]` drew a line that stopped mid-graph, so the whole route
-    // has to survive into `points`.
-    const result = await computeElkLayout(graphAt(2), inputsFor(graphAt(2), 2))
+    // has to survive — as sections, not joined into one polyline.
+    //
+    // Measured on this fixture with elkjs 0.9.3: every edge comes back as a
+    // single section, so the *joining* defect the previous version guarded
+    // against cannot be provoked here. It is still a real one — the guard is
+    // that `LaidOutEdge` has no joined form at all any more, which the section
+    // assertion below pins.
+    const graph = graphAt(2)
+    const result = await computeElkLayout(graph, inputsFor(graph, 2))
+    expect(result.edges.length).toBeGreaterThan(0)
+
     for (const edge of result.edges) {
-      expect(edge.points.length, `${edge.id} 没有路径点`).toBeGreaterThanOrEqual(2)
-      expect(edge.startPoint).toEqual(edge.points[0])
-      expect(edge.endPoint).toEqual(edge.points[edge.points.length - 1])
-      // The bend points are the interior of the route and nothing else.
-      expect(edge.bendPoints).toEqual(edge.points.slice(1, -1))
+      expect(edge.sections.length, `${edge.id} 没有 section`).toBeGreaterThan(0)
+      for (const section of edge.sections) {
+        // Each section is self-consistent: the bend points are its interior.
+        expect(Number.isFinite(section.startPoint.x)).toBe(true)
+        expect(Number.isFinite(section.endPoint.x)).toBe(true)
+        for (const point of section.bendPoints) {
+          expect(Number.isFinite(point.x) && Number.isFinite(point.y)).toBe(true)
+        }
+      }
     }
+  })
+
+  it('每条边的首末段端点落在两端 render port 上（验收 3）', async () => {
+    // The machine-checked form of 18.3. Before render ports existed this could
+    // not hold: the route ended wherever ELK decided the node boundary was,
+    // while the line was drawn from a handle placed by a third formula.
+    const graph = graphAt(2)
+    const result = await computeElkLayout(graph, inputsFor(graph, 2))
+
+    expectEndpointsOnPorts(result.edges, result.ports, 'ELK L2')
+    expectOrthogonal(result.edges, 'ELK L2')
+  })
+
+  it('layout ports 覆盖每条边的两端，且 id 唯一', async () => {
+    const graph = graphAt(2)
+    const result = await computeElkLayout(graph, inputsFor(graph, 2))
+
+    const ids = result.ports.map((port) => port.id)
+    expect(new Set(ids).size).toBe(ids.length)
+
+    const known = new Set(ids)
+    for (const edge of result.edges) {
+      expect(known.has(edge.sourcePortId), `${edge.id} 缺 source port`).toBe(true)
+      expect(known.has(edge.targetPortId), `${edge.id} 缺 target port`).toBe(true)
+    }
+  })
+
+  it('反馈边走下方通道：两端端口在 SOUTH，路线低于所有节点（验收 4）', async () => {
+    // The fixture's `flow.rate_feedback` runs from a node ELK places to the
+    // *right* of its target, which is exactly 9.2's condition for a lane.
+    const graph = graphAt(2)
+    const result = await computeElkLayout(graph, inputsFor(graph, 2))
+
+    const feedback = graph.edges.filter((edge) => edge.feedback)
+    expect(feedback.length, '夹具里没有反馈边，这条断言就失去意义').toBeGreaterThan(0)
+
+    const byPortId = new Map(result.ports.map((port) => [port.id, port]))
+    const nodeById = new Map(result.nodes.map((node) => [node.id, node]))
+    const maxBottom = Math.max(...result.nodes.map((node) => node.y + node.height))
+
+    const feedbackIds = new Set(feedback.map((edge) => edge.id))
+    const laned = result.edges.filter((edge) => feedbackIds.has(edge.id))
+    expect(laned.length).toBeGreaterThan(0)
+
+    for (const edge of laned) {
+      const source = byPortId.get(edge.sourcePortId)
+      const target = byPortId.get(edge.targetPortId)
+      expect(source?.side, `${edge.id} source 不在底边`).toBe('SOUTH')
+      expect(target?.side, `${edge.id} target 不在底边`).toBe('SOUTH')
+
+      // The ports stay on the nodes the edge actually connects, so a lane is a
+      // different route and not a different edge.
+      expect(source?.nodeId).toBe(edge.source)
+      expect(target?.nodeId).toBe(edge.target)
+
+      // Both ends sit on their own node's bottom edge.
+      for (const port of [source, target]) {
+        const node = nodeById.get(port?.nodeId ?? '')
+        expect(port?.y, `${edge.id} 端口不在节点底边上`).toBeCloseTo(
+          (node?.y ?? 0) + (node?.height ?? 0),
+          6,
+        )
+      }
+
+      // The channel itself clears every node in the drawing — that is what makes
+      // it a channel rather than a line crossing the graph.
+      const deepest = Math.max(
+        ...edge.sections.flatMap((section) => sectionPolyline(section).map((point) => point.y)),
+      )
+      expect(deepest, `${edge.id} 的下方通道没有越过所有节点`).toBeGreaterThan(maxBottom)
+    }
+
+    expectEndpointsOnPorts(result.edges, result.ports, '反馈通道')
+    expectOrthogonal(result.edges, '反馈通道')
+  })
+
+  it('两次布局的 ports 与 sections 完全相同（验收 9）', async () => {
+    const first = await computeElkLayout(graphAt(2))
+    const second = await computeElkLayout(graphAt(2))
+
+    expect(first.ports).toEqual(second.ports)
+    expect(first.edges).toEqual(second.edges)
   })
 
   it('跨容器的边也有路径，而不是退化成一条直线', async () => {
@@ -275,6 +376,21 @@ describe('computeElkLayout 的标签放置', () => {
     for (const node of result.nodes) expect(inside(node), `节点 ${node.id} 在 bounds 之外`).toBe(true)
     for (const label of result.labels.filter((entry) => entry.visibleByDefault)) {
       expect(inside(label), `标签 ${label.edgeId} 在 bounds 之外`).toBe(true)
+    }
+
+    // Routes too, not just the shapes ELK placed (18.4). A feedback lane runs
+    // below every node, so it is the one piece of geometry that can extend the
+    // drawing without moving anything — and if the first fit did not account
+    // for it, the lane would be cut off exactly when it is doing its job.
+    for (const edge of result.edges) {
+      for (const section of edge.sections) {
+        for (const point of sectionPolyline(section)) {
+          expect(
+            inside({ ...point, width: 0, height: 0 }),
+            `${edge.id} 的路径点 (${String(point.x)},${String(point.y)}) 在 bounds 之外`,
+          ).toBe(true)
+        }
+      }
     }
     // The margin is what stops a label from being drawn flush against the edge
     // of the canvas after the first fit.
@@ -364,9 +480,15 @@ describe('fallback 与 ELK 的结果形状一致', () => {
     for (const edge of result.edges) {
       expect(edge.source).toBeTruthy()
       expect(edge.target).toBeTruthy()
-      // No routing is attempted, so there is no path to anchor a label to (14).
-      expect(edge.points).toEqual([])
+      // Real ports and a real route: the `{x: 0, y: 0}` sentinel this used to
+      // hand out would have drawn every edge out of the top-left corner, and
+      // `SemanticFlowEdge` now reads the route rather than Vue Flow's own
+      // endpoints.
+      expect(edge.sections.length).toBeGreaterThan(0)
     }
+
+    expectEndpointsOnPorts(result.edges, result.ports, 'fallback L2')
+    expectOrthogonal(result.edges, 'fallback L2')
   })
 
   it('fallback 的 bounds 覆盖所有节点', () => {
@@ -545,7 +667,7 @@ describe('LayoutCache', () => {
 })
 
 describe('computeFallbackLayout', () => {
-  it('为每个节点生成互不重叠的坐标，且不产生折点', () => {
+  it('为每个节点生成互不重叠的坐标', () => {
     const graph = graphAt(2)
     const result = computeFallbackLayout(graph)
 
@@ -564,7 +686,6 @@ describe('computeFallbackLayout', () => {
 
     expectNoOverlaps(result.nodes, 'computeFallbackLayout L2', { mayNest: nested })
 
-    expect(result.edges.every((edge) => edge.bendPoints.length === 0)).toBe(true)
     expect(result.width).toBeGreaterThan(0)
     expect(result.height).toBeGreaterThan(0)
   })
