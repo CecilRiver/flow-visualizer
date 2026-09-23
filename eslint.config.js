@@ -46,6 +46,11 @@ export default tseslint.config(
     files: ['**/*.spec.ts', 'tests/**/*.ts'],
     rules: {
       'no-console': 'off',
+      // A `.vue` rule, and a false positive on a test: mounting a renderer that
+      // reads provide/inject needs a throwaway host in the test file to call
+      // the provider, and a test has no reason to split that into a second
+      // file the way a real component would.
+      'vue/one-component-per-file': 'off',
     },
   },
 )

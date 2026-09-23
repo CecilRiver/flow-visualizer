@@ -94,7 +94,18 @@ const selectedScenario = computed({
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  min-width: 0;
+  /*
+   * Refuses to shrink, so the toolbar's `overflow-x` is what absorbs a narrow
+   * viewport rather than the select collapsing.
+   *
+   * The two selects have fixed widths; left shrinkable at 1024px they were
+   * squeezed to 44px and the surviving box overlapped the L0 level button
+   * beside them — the button's centre landed inside the select, so it could no
+   * longer be clicked at all. The header already scrolls below 960px and the
+   * tools row is a horizontal scroller above it, so overflowing is the outcome
+   * this layout was built for.
+   */
+  flex: none;
 }
 
 .scenario-selector__bundle {

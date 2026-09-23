@@ -229,8 +229,6 @@ export interface FlowKindLegendEntry {
   /** SVG dash array; empty string means a solid line. */
   dashArray: string
   strokeWidth: number
-  /** Feedback edges are drawn with the arrow reversed as well. */
-  reversed: boolean
   description: string
 }
 
@@ -251,10 +249,13 @@ export function flowKindLegend(): FlowKindLegendEntry[] {
     color: cssVar(FLOW_KIND_VAR[kind]),
     dashArray: FLOW_KIND_STROKE[kind].dashArray,
     strokeWidth: FLOW_KIND_STROKE[kind].strokeWidth,
-    reversed: kind === 'feedback',
+    // The feedback kind used to carry a `reversed` flag for the arrowhead, drawn
+    // at the source end. The arrow points at `to` on every edge now
+    // (GRAPH_READABILITY_DESIGN.md 9.2), so there is nothing left for a reader
+    // to be warned about: what marks feedback is the dashed line and the wording.
     description:
       kind === 'feedback'
-        ? '反馈：影响上游的数据回流，箭头反向绘制'
+        ? '反馈：影响上游的数据回流，走下方通道并画成虚线'
         : `${FLOW_KIND_LABEL[kind]}数据流`,
   }))
 }

@@ -53,6 +53,29 @@ body {
   filter: drop-shadow(0 0 3px var(--focus-ring));
 }
 
+/*
+ * The node half of the same rule, and it needs a different selector to win.
+ *
+ * `theme-default.css` switches the ring off with
+ * `.vue-flow__node.selectable:focus, .vue-flow__node.selectable:focus-visible`
+ * — three simple selectors, so the global `:focus-visible` above (one) loses to
+ * it on specificity whatever the import order. The edge rule could stay at two
+ * because the library only ever wrote two for edges; the node has to match its
+ * three. This file is imported after the library's stylesheets, so an
+ * equally-specific rule wins without reaching for `!important`.
+ *
+ * `border-radius` is not decoration: the outline traces the element's border
+ * box, and without it the ring is a rectangle around a rounded node. The same
+ * radius is used by `.is-highlighted` in `FlowCanvas.vue`, so focus and
+ * selection read as the same kind of emphasis.
+ */
+.vue-flow__node.selectable:focus,
+.vue-flow__node.selectable:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+  border-radius: var(--radius-lg);
+}
+
 .u-visually-hidden {
   position: absolute;
   width: 1px;

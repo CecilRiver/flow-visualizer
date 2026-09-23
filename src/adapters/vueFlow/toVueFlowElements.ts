@@ -2,14 +2,16 @@ import { MarkerType, type Edge as VueFlowEdge, type Node as VueFlowNode } from '
 
 import {
   COMPONENT_KIND_LABEL,
-  FLOW_KIND_LABEL,
   VERIFICATION_LABEL,
   VERIFICATION_SHORT_LABEL,
   labelFor,
 } from '@/domain/labels'
-import type { Component, GraphLevel, Port } from '@/domain/model'
+import type { Component, GraphLevel } from '@/domain/model'
 import type { ProjectedGraph, ProjectedNode } from '@/domain/view-model'
+import { edgePresentation } from '@/layout/edgePresentation'
 import type { LaidOutEdge, LaidOutNode, LayoutResult } from '@/layout/elkLayout'
+import type { PlacedLabel } from '@/layout/labelPlacement'
+import { renderPortId } from '@/layout/layoutPorts'
 import { sizeForNode } from '@/layout/nodeMetrics'
 import { GROUP_ID_PREFIX } from '@/projection/projectScenario'
 
@@ -43,10 +45,19 @@ const READ_ONLY_NODE_FLAGS = {
 /**
  * The arrowhead every edge carries at its target end (DESIGN.md 13.4).
  *
- * A feedback edge gets it at the *source* end instead: the flow runs back the
- * way the layout draws it, and an arrowhead at the far end would state the
- * opposite of the configuration. Direction is the one thing about a feedback
- * edge that no amount of colour or dashing can convey.
+ * Every edge, feedback included: the arrow always points at `to`, the consumer
+ * (GRAPH_READABILITY_DESIGN.md 9.2). A feedback flow is still a flow — what
+ * makes it feedback is that it runs *against* the level's reading direction, so
+ * the route doubles back, and that is what the dashed line and the 反馈 wording
+ * say. Turning the arrowhead round to point at the provider said the data
+ * travels to the component that produced it, which is the opposite of what the
+ * configuration declares.
+ *
+ * The old `markerStart` variant did not even point where it was meant to. Vue
+ * Flow sets `orient="auto-start-reverse"` on its markers, and per SVG that only
+ * reverses a `marker-start`: on `marker-end` it behaves as plain `auto`. So the
+ * arrow sat at the source end and pointed back out of the path — into the node
+ * it started from.
  */
 const ARROW_MARKER = { type: MarkerType.ArrowClosed, width: 14, height: 14 } as const
 
@@ -80,27 +91,12 @@ function summarize(description: string | undefined): string {
   return stop === -1 ? trimmed : trimmed.slice(0, stop)
 }
 
-/** Spreads a side's ports evenly so several never stack on one spot. */
-function placeHandles(ports: readonly Port[]): NodePortHandle[] {
-  const counts = {
-    input: ports.filter((port) => port.direction === 'input').length,
-    output: ports.filter((port) => port.direction === 'output').length,
-  }
-  const seen = { input: 0, output: 0 }
-
-  return ports.map((port) => {
-    seen[port.direction] += 1
-    return {
-      id: port.id,
-      name: port.name,
-      direction: port.direction,
-      offset: (seen[port.direction] / (counts[port.direction] + 1)) * 100,
-    }
-  })
-}
-
-function businessNodeData(node: ProjectedNode, component: Component | undefined): BusinessNodeData {
-  const ports = component?.ports ?? []
+function businessNodeData(
+  node: ProjectedNode,
+  component: Component | undefined,
+  ports: readonly NodePortHandle[],
+): BusinessNodeData {
+  const declaredPorts = component?.ports ?? []
   const raw = component?.verification ?? null
   const verification = verificationParts(raw)
 
@@ -117,17 +113,21 @@ function businessNodeData(node: ProjectedNode, component: Component | undefined)
     verificationShortLabel: verification.shortLabel,
     verificationGlyph: verification.glyph,
     portCounts: {
-      inputs: ports.filter((port) => port.direction === 'input').length,
-      outputs: ports.filter((port) => port.direction === 'output').length,
+      inputs: declaredPorts.filter((port) => port.direction === 'input').length,
+      outputs: declaredPorts.filter((port) => port.direction === 'output').length,
     },
-    ports: placeHandles(ports),
+    ports: [...ports],
     hiddenFlowCount: node.hiddenInternalFlowIds.length,
     responsibility: component?.responsibility ?? '',
     summary: summarize(component?.description),
   }
 }
 
-function externalNodeData(node: ProjectedNode, component: Component | undefined): ExternalNodeData {
+function externalNodeData(
+  node: ProjectedNode,
+  component: Component | undefined,
+  ports: readonly NodePortHandle[],
+): ExternalNodeData {
   const raw = component?.verification ?? null
   const verification = verificationParts(raw)
 
@@ -141,14 +141,20 @@ function externalNodeData(node: ProjectedNode, component: Component | undefined)
     verificationShortLabel: verification.shortLabel,
     verificationGlyph: verification.glyph,
     responsibility: component?.responsibility ?? '',
+    ports: [...ports],
   }
 }
 
-function groupNodeData(group: ProjectedNode, childCount: number): GroupNodeData {
+function groupNodeData(
+  group: ProjectedNode,
+  childCount: number,
+  ports: readonly NodePortHandle[],
+): GroupNodeData {
   return {
     id: group.id,
     label: group.label,
     childCount,
+    ports: [...ports],
     // The group stands for exactly one real L1 component; the display prefix is
     // stripped so the Inspector opens the component, not the box.
     domainId: group.id.startsWith(GROUP_ID_PREFIX)
@@ -160,6 +166,14 @@ function groupNodeData(group: ProjectedNode, childCount: number): GroupNodeData 
 export interface ToVueFlowOptions {
   graph: ProjectedGraph
   layout: LayoutResult
+  /**
+   * The projection's level, needed to pick the label wording (5.1).
+   *
+   * `ProjectedGraph` does not carry it — the level is a projection *input*, and
+   * adding it to the graph would make two graphs with identical contents
+   * distinguishable by a field nothing else reads.
+   */
+  level: GraphLevel
   componentsById: ReadonlyMap<string, Component>
   /** Projected ids related to the current selection, for highlighting. */
   highlightedNodeIds?: ReadonlySet<string>
@@ -183,11 +197,18 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
   const {
     graph,
     layout,
+    level,
     componentsById,
     highlightedNodeIds,
     highlightedEdgeIds,
     hasSelection = false,
   } = options
+
+  // Names, for the direction clause of an edge's accessible text. Groups are
+  // included because an L2 edge can point at one.
+  const nameById = new Map<string, string>(
+    [...graph.nodes, ...graph.groups].map((node) => [node.id, node.label]),
+  )
 
   const positionById = new Map<string, LaidOutNode>(layout.nodes.map((node) => [node.id, node]))
 
@@ -200,8 +221,58 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
     else bucket.push(node.id)
   }
 
+  /**
+   * The layout's render ports, grouped by node and made node-local.
+   *
+   * The layout reports absolute graph coordinates because everything above this
+   * file is one coordinate space. Vue Flow positions a handle inside the node's
+   * own element, so the node's own placement is subtracted here — and only here,
+   * which is what keeps the drawn handle and the routed endpoint the same point.
+   */
+  const handlesByNode = new Map<string, NodePortHandle[]>()
+  for (const port of layout.ports) {
+    const placed = positionById.get(port.nodeId)
+    // A port on a node the layout did not place cannot be drawn; the node itself
+    // is being skipped for the same reason.
+    if (placed === undefined) continue
+    const handle: NodePortHandle = {
+      id: port.id,
+      end: port.end,
+      side: port.side,
+      x: port.x - placed.x,
+      y: port.y - placed.y,
+      ...(port.semanticPortId === undefined ? {} : { semanticPortId: port.semanticPortId }),
+    }
+    const bucket = handlesByNode.get(port.nodeId)
+    if (bucket === undefined) handlesByNode.set(port.nodeId, [handle])
+    else bucket.push(handle)
+  }
+  const handlesOf = (nodeId: string): readonly NodePortHandle[] => handlesByNode.get(nodeId) ?? []
+
   const nodes: VueFlowNode[] = []
   const missingPositions: string[] = []
+
+  /**
+   * The node's accessible name: its label, its kind, and its verification state.
+   *
+   * The card can only afford a glyph and a short form, so the state in full has
+   * to live somewhere a screen reader reaches (GRAPH_READABILITY_DESIGN.md 5.1,
+   * 5.2). It used to live on the verification chip's `title`, which is a
+   * pointer-only affordance — a keyboard user tabbing to the node heard the
+   * short form and nothing else. The edge's name already ends in `证据：…`
+   * (`edgePresentation.ts`), so this is the node half of the same rule.
+   *
+   * A group is skipped, not defaulted: it is a display-only container and the
+   * states belong to the components inside it, so it has none to report.
+   */
+  const accessibleName = (
+    node: ProjectedNode,
+    data: BusinessNodeData | ExternalNodeData | GroupNodeData,
+  ): string => {
+    const kind = labelFor(COMPONENT_KIND_LABEL, node.kind)
+    if (!('verificationLabel' in data)) return `${node.label}（${kind}）`
+    return `${node.label}（${kind}，证据：${data.verificationLabel}）`
+  }
 
   const buildNode = (
     node: ProjectedNode,
@@ -226,12 +297,13 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
     const highlighted = highlightedNodeIds?.has(node.id) ?? false
     const dimmed = hasSelection && !highlighted
 
+    const ports = handlesOf(node.id)
     const data =
       type === NODE_TYPE.group
-        ? groupNodeData(node, (childrenByGroup.get(node.id) ?? []).length)
+        ? groupNodeData(node, (childrenByGroup.get(node.id) ?? []).length, ports)
         : type === NODE_TYPE.external
-          ? externalNodeData(node, component)
-          : businessNodeData(node, component)
+          ? externalNodeData(node, component, ports)
+          : businessNodeData(node, component, ports)
 
     const element: VueFlowNode = {
       id: node.id,
@@ -250,7 +322,7 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
         .join(' '),
       // Vue Flow renders both of these onto the node element, which is what the
       // E2E selectors and screen readers key off.
-      ariaLabel: `${node.label}（${labelFor(COMPONENT_KIND_LABEL, node.kind)}）`,
+      ariaLabel: accessibleName(node, data),
       ...READ_ONLY_NODE_FLAGS,
     }
 
@@ -278,47 +350,44 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
   }
 
   const routeById = new Map<string, LaidOutEdge>(layout.edges.map((edge) => [edge.id, edge]))
-  const nodeById = new Map<string, ProjectedNode>()
-  for (const node of graph.nodes) nodeById.set(node.id, node)
-  for (const group of graph.groups) nodeById.set(group.id, group)
-
-  /**
-   * Picks the handle an edge attaches to (DESIGN.md 10.5).
-   *
-   * Only an L2 edge standing for a single flow keeps the declared port: at
-   * L0/L1 an edge always stands for several flows, and no single port speaks
-   * for the aggregate. The fallback also catches a port the component never
-   * declared, because an edge with a dangling handle would silently vanish
-   * from the drawing rather than show up as a data problem.
-   */
-  const portHandle = (
-    nodeId: string,
-    portId: string | undefined,
-    fallback: string,
-  ): string => {
-    if (portId === undefined) return fallback
-    const node = nodeById.get(nodeId)
-    if (node === undefined || node.level !== 2) return fallback
-    const component = componentsById.get(node.sourceComponentIds[0] ?? '')
-    const declared = component?.ports?.some((port) => port.id === portId) ?? false
-    return declared ? portId : fallback
-  }
+  const labelByEdgeId = new Map<string, PlacedLabel>(layout.labels.map((label) => [label.edgeId, label]))
 
   const edges: VueFlowEdge[] = graph.edges.map((edge) => {
     const route = routeById.get(edge.id)
     const highlighted = highlightedEdgeIds?.has(edge.id) ?? false
 
+    const presentation = edgePresentation({
+      edge,
+      level,
+      nodeLabel: (id) => nameById.get(id),
+    })
+
     const data: SemanticEdgeData = {
       id: edge.id,
       kind: edge.kind,
       label: edge.label,
+      presentation,
+      verification: edge.verification,
       feedback: edge.feedback,
       verificationLabel: labelFor(VERIFICATION_LABEL, edge.verification),
       verificationShortLabel: labelFor(VERIFICATION_SHORT_LABEL, edge.verification),
       flowCount: edge.sourceFlowIds.length,
-      bendPoints: route === undefined ? [] : [...route.bendPoints],
-      startPoint: route?.startPoint ?? null,
-      endPoint: route?.endPoint ?? null,
+      // A copy, not the layout's own array: the layout result is cached and
+      // shared, so a renderer holding a reference could edit geometry that the
+      // next reader is still laying out against.
+      sections: (route?.sections ?? []).map((section) => ({
+        id: section.id,
+        startPoint: { ...section.startPoint },
+        bendPoints: section.bendPoints.map((point) => ({ ...point })),
+        endPoint: { ...section.endPoint },
+        incomingSections: [...section.incomingSections],
+        outgoingSections: [...section.outgoingSections],
+      })),
+      // A label the layout did not place is `null`, never a zero-sized box at
+      // the origin: an origin box would render as a real label in the top-left
+      // corner of the drawing, which is exactly the kind of confident wrong
+      // answer this whole pass exists to remove.
+      labelBox: labelByEdgeId.get(edge.id) ?? null,
       highlighted,
       dimmed: hasSelection && !highlighted,
     }
@@ -328,8 +397,16 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
       type: EDGE_TYPE.semantic,
       source: edge.source,
       target: edge.target,
-      sourceHandle: portHandle(edge.source, edge.sourceHandle, 'out'),
-      targetHandle: portHandle(edge.target, edge.targetHandle, 'in'),
+      /*
+       * The render port the layout routed to, never the declared Schema port.
+       *
+       * Both ends of an edge are named here, which is what makes Vue Flow's own
+       * idea of where the edge begins agree with the path drawn below. Where the
+       * declared port still matters — the Inspector, the hand-over to a
+       * configuration — it travels on the port itself as `semanticPortId`.
+       */
+      sourceHandle: renderPortId(edge.id, 'source'),
+      targetHandle: renderPortId(edge.id, 'target'),
       data,
       selectable: true,
       focusable: true,
@@ -359,16 +436,20 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
       // No animation: the graph is static business semantics, and motion would
       // read as live telemetry (DESIGN.md 10.5, 13.4).
       animated: false,
-      // Feedback runs the other way, so its arrowhead moves to the far end.
-      ...(edge.feedback
-        ? { markerStart: ARROW_MARKER }
-        : { markerEnd: ARROW_MARKER }),
+      // One convention for every edge, feedback included: the arrow points at
+      // the consumer. See `ARROW_MARKER` for why the feedback case has none.
+      markerEnd: ARROW_MARKER,
       class: ['fv-edge', highlighted ? 'is-highlighted' : '', data.dimmed ? 'is-dimmed' : '']
         .filter(Boolean)
         .join(' '),
-      // `edge.kind` is a flow kind, not a component kind: looking it up in the
-      // component table would announce the raw Schema value to a screen reader.
-      ariaLabel: `${labelFor(FLOW_KIND_LABEL, edge.kind)}：${edge.label}`,
+      /*
+       * The full sentence, not the drawn text (5.1).
+       *
+       * At L0/L1 the canvas shows a two-word kind label, and at low zoom it
+       * shows nothing at all. Neither is what a screen reader should hear, so
+       * the accessible name is derived from the projection and never shortened.
+       */
+      ariaLabel: presentation.accessibleText,
     } satisfies VueFlowEdge
   })
 

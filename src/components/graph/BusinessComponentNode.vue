@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { Handle, Position } from '@vue-flow/core'
+import { Handle } from '@vue-flow/core'
 import { computed } from 'vue'
 
 import type { BusinessNodeData } from '@/adapters/vueFlow/nodeTypes'
 import { verificationTokenName } from '@/styles/semanticTokens'
+
+import { handlePosition, handleStyle } from './handlePlacement'
 
 /**
  * A business component at its own level (DESIGN.md 13.2).
@@ -15,9 +17,6 @@ const props = defineProps<{
   data: BusinessNodeData
   selected?: boolean
 }>()
-
-const inputs = computed(() => props.data.ports.filter((port) => port.direction === 'input'))
-const outputs = computed(() => props.data.ports.filter((port) => port.direction === 'output'))
 
 const verificationStyle = computed(() => ({
   '--node-accent': `var(${verificationTokenName(props.data.verification)})`,
@@ -47,12 +46,26 @@ const verificationStyle = computed(() => ({
       {{ data.label }}
     </h3>
 
-    <p
+    <!--
+      GRAPH_READABILITY_DESIGN.md 5.4: the ellipsis is the canvas summarising,
+      not data going missing, so the full sentence has to be reachable — by
+      hover *and* by keyboard. `focus` is added to the trigger list because the
+      default is hover only, and the trigger is given a tab stop because a
+      `focus` trigger on an unfocusable element can never fire.
+    -->
+    <ElTooltip
       v-if="data.responsibility !== ''"
-      class="business-node__responsibility u-truncate"
+      :content="data.responsibility"
+      :trigger="['hover', 'focus']"
+      placement="top"
     >
-      {{ data.responsibility }}
-    </p>
+      <p
+        class="business-node__responsibility u-truncate"
+        tabindex="0"
+      >
+        {{ data.responsibility }}
+      </p>
+    </ElTooltip>
 
     <footer class="business-node__foot">
       <span v-if="data.portCounts.inputs > 0">入 {{ data.portCounts.inputs }}</span>
@@ -65,42 +78,23 @@ const verificationStyle = computed(() => ({
       </span>
     </footer>
 
-    <!-- One handle per declared port, so an edge keeps its real endpoint. -->
-    <Handle
-      v-for="port in inputs"
-      :id="port.id"
-      :key="`in-${port.id}`"
-      type="target"
-      :position="Position.Left"
-      :style="{ top: `${port.offset}%` }"
-      :title="port.name"
-    />
-    <Handle
-      v-for="port in outputs"
-      :id="port.id"
-      :key="`out-${port.id}`"
-      type="source"
-      :position="Position.Right"
-      :style="{ top: `${port.offset}%` }"
-      :title="port.name"
-    />
-
     <!--
-      Generic handles for aggregated edges. They must exist or those edges would
-      not render at all, but they are not drawn: at this level an aggregate has
-      no single port to point at, so a visible dot would claim one does.
+      One handle per render port, at the coordinate the layout routed to (7.3).
+
+      There is no generic pair any more, and no handle for a declared port that
+      no edge reaches. An aggregate edge names the render ports of its own two
+      ends like every other edge, so it needs nothing special — and the handles
+      that used to exist for it were the ones an edge could reference without
+      there being anything to reference.
     -->
     <Handle
-      id="in"
-      type="target"
-      :position="Position.Left"
-      class="business-node__aggregate-handle"
-    />
-    <Handle
-      id="out"
-      type="source"
-      :position="Position.Right"
-      class="business-node__aggregate-handle"
+      v-for="port in data.ports"
+      :id="port.id"
+      :key="port.id"
+      :type="port.end"
+      :position="handlePosition(port.side)"
+      :style="handleStyle(port)"
+      :title="port.semanticPortId ?? ''"
     />
   </div>
 </template>
@@ -171,6 +165,17 @@ const verificationStyle = computed(() => ({
   flex: 1;
 }
 
+/*
+ * The responsibility line is a tab stop so the keyboard can reach its tooltip,
+ * and a tab stop the user cannot see is worse than none — so it shows focus the
+ * same way the canvas shows selection.
+ */
+.business-node__responsibility:focus-visible {
+  outline: 2px solid var(--graph-selection);
+  outline-offset: 1px;
+  border-radius: var(--radius-sm);
+}
+
 .business-node__foot {
   display: flex;
   gap: var(--space-3);
@@ -181,9 +186,5 @@ const verificationStyle = computed(() => ({
 .business-node__hidden {
   margin-left: auto;
   font-style: italic;
-}
-
-.business-node__aggregate-handle {
-  opacity: 0;
 }
 </style>

@@ -79,6 +79,46 @@ describe('FlowCanvas', () => {
     wrapper.unmount()
   })
 
+  it('重新扫描同一 model ID 但内容已改时，不复用旧布局（验收 10）', async () => {
+    /*
+     * The defect this pins, at the level it actually happened.
+     *
+     * The layout cache was keyed on the *identity* of what was being laid out —
+     * bundle id, scenario, level, filters — and every one of those survives a
+     * folder rescan. Editing a flow's name in the YAML and hitting 刷新 therefore
+     * produced a cache hit, and the previous layout was applied to a graph that
+     * no longer existed.
+     *
+     * Object identity is the precise observable: a cache hit returns the very
+     * same `LayoutResult` instance, so `toBe` is true exactly when the stale
+     * layout was served.
+     */
+    const wrapper = mountCanvas()
+    await waitForNodes(wrapper)
+
+    const controller = useGraphController()
+    const first = controller.layout.value
+    expect(first).not.toBeNull()
+
+    // Same bundle id, same scenario, same level, same filters. Only a flow's
+    // display name differs — which changes the label's measured width, and with
+    // it the box ELK was asked to reserve.
+    const catalog = useCatalogStore()
+    catalog.validBundles = [
+      buildFixtureBundle({ 'flow.measurement': '一个明显更长的测量数据流名称' }),
+    ]
+    catalog.activateFirstAvailable()
+
+    await vi.waitFor(
+      () => {
+        expect(controller.layout.value).not.toBe(first)
+      },
+      { timeout: 10_000 },
+    )
+
+    wrapper.unmount()
+  })
+
   it('renders each node through its fixed component type', async () => {
     const wrapper = mountCanvas()
     await waitForNodes(wrapper)
@@ -176,6 +216,56 @@ describe('FlowCanvas', () => {
     // scenario's nodes, with a notice, rather than an empty canvas.
     expect(wrapper.findAll('.vue-flow__node')).toHaveLength(before)
     expect(wrapper.text()).toContain('仅显示场景声明的节点')
+
+    wrapper.unmount()
+  })
+
+  /*
+   * GRAPH_READABILITY_DESIGN.md 5.3, 17.3#2, 18.8: zoom changes what is drawn
+   * and nothing else. It must not rebuild the projection and must not run ELK
+   * again — a layout that re-ran on every wheel tick would move the graph under
+   * the reader's hand, and it would do it at exactly the moment they are trying
+   * to read a label.
+   *
+   * Object identity is the measurable form of that, the same one the rescan test
+   * above uses: a cache hit hands back the very same `LayoutResult`, so `toBe`
+   * is true exactly when no new layout ran. Asserting on the coordinates instead
+   * would pass even if ELK had re-run and happened to agree.
+   *
+   * Driven through the control buttons rather than by writing the viewport, so
+   * the band has to change by the path a reader would take. The loops are
+   * bounded and the assertions after them are what fail if the bands are never
+   * crossed — a loop that silently gave up would turn "no labels ever appeared"
+   * into a pass.
+   */
+  it('缩放只改画什么，不重新投影也不重新布局（验收 8）', async () => {
+    const wrapper = mountCanvas()
+    await waitForNodes(wrapper)
+
+    const controller = useGraphController()
+    const layout = controller.layout.value
+    const graph = controller.graph.value
+    expect(layout).not.toBeNull()
+
+    const labels = (): number => wrapper.findAll('.semantic-edge__label').length
+    const zoomIn = wrapper.find('.vue-flow__controls-zoomin')
+    const zoomOut = wrapper.find('.vue-flow__controls-zoomout')
+    expect(zoomIn.exists()).toBe(true)
+
+    for (let attempt = 0; attempt < 12 && labels() === 0; attempt += 1) {
+      await zoomIn.trigger('click')
+      await wrapper.vm.$nextTick()
+    }
+    expect(labels(), '放大到上限仍然没有画出任何标签').toBeGreaterThan(0)
+    expect(controller.layout.value).toBe(layout)
+
+    for (let attempt = 0; attempt < 12 && labels() > 0; attempt += 1) {
+      await zoomOut.trigger('click')
+      await wrapper.vm.$nextTick()
+    }
+    expect(labels(), '缩小到下限标签仍然画着').toBe(0)
+    expect(controller.layout.value).toBe(layout)
+    expect(controller.graph.value).toBe(graph)
 
     wrapper.unmount()
   })

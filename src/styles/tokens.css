@@ -40,6 +40,18 @@
   --graph-dimmed-opacity: 0.28;
   --graph-canvas-bg: #fbfcfe;
 
+  /*
+   * Edge label chrome (GRAPH_READABILITY_DESIGN.md 6.3).
+   *
+   * The halo is what separates a label box from the line running beneath it.
+   *
+   * The label's font size, line height and maximum width are deliberately NOT
+   * here. Those decide how much room the layout has to reserve for a label, so
+   * they live in `src/layout/readabilityOptions.ts` and the renderer binds them
+   * from there. A second copy in this file is the one that would drift.
+   */
+  --label-halo: rgba(255, 255, 255, 0.92);
+
   /* Spacing scale */
   --space-1: 4px;
   --space-2: 8px;

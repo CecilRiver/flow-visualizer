@@ -88,10 +88,6 @@ const scopes = computed(() => scopeLegend())
             />
           </svg>
           <span>{{ entry.label }}</span>
-          <span
-            v-if="entry.reversed"
-            class="legend__note"
-          >反向箭头</span>
         </li>
       </ul>
 
@@ -206,8 +202,4 @@ const scopes = computed(() => scopeLegend())
   flex: none;
 }
 
-.legend__note {
-  margin-left: auto;
-  color: var(--text-muted);
-}
 </style>

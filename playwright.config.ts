@@ -46,7 +46,10 @@ export default defineConfig({
       // (the sidebar is a column until 1280), so it must stay fully usable.
       name: 'compact',
       use: { ...devices['Desktop Chrome'], viewport: { width: 1024, height: 768 } },
-      testMatch: /screenshots\.spec\.ts/,
+      // The readability measurements run here as well as on the desktop
+      // project: a label that fits at 1440px can be clipped at 1024px, which is
+      // the failure the design document is written about.
+      testMatch: /(screenshots|readability)\.spec\.ts/,
     },
   ],
 

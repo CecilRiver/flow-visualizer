@@ -11,8 +11,16 @@ import {
   type ProjectedNode,
   type ScenarioSlice,
 } from '@/domain/view-model'
+import { edgeLayoutInputs } from '@/layout/edgePresentation'
 import { computeFallbackLayout } from '@/layout/fallbackLayout'
-import { layoutCacheKey, LayoutCache, layoutGraph, type LayoutResult } from '@/layout/elkLayout'
+import {
+  layoutCacheKey,
+  LayoutCache,
+  layoutGraph,
+  layoutInputSignature,
+  type LayoutResult,
+} from '@/layout/elkLayout'
+import type { Box } from '@/layout/layoutBounds'
 import { buildOrderMaps, projectScenario } from '@/projection/projectScenario'
 import { selectScenario } from '@/projection/selectScenario'
 import { useCatalogStore } from '@/stores/catalog'
@@ -62,6 +70,16 @@ export interface GraphController {
 
 const layoutCache = new LayoutCache()
 
+/**
+ * The extent of an empty drawing.
+ *
+ * There is nothing to fit, and the canvas is not fitted at all in this state —
+ * but `LayoutResult` needs a box, and a zero box is the honest one: it says
+ * "nothing was laid out" rather than naming a plausible viewport nothing
+ * corresponds to.
+ */
+const EMPTY_BOUNDS: Box = { x: 0, y: 0, width: 0, height: 0 }
+
 const sliceRef = shallowRef<ScenarioSlice | null>(null)
 const graphRef = shallowRef<ProjectedGraph>(createEmptyProjectedGraph())
 const layoutRef = shallowRef<LayoutResult | null>(null)
@@ -78,23 +96,46 @@ async function runLayout(): Promise<void> {
   const token = ++layoutToken
   const graph = graphRef.value
 
-  if (graph.nodes.length === 0 && graph.groups.length === 0) {
-    layoutRef.value = { nodes: [], edges: [], width: 0, height: 0 }
-    layoutUsedFallbackRef.value = false
-    return
-  }
-
   const catalog = useCatalogStore()
   const explorer = useExplorerStore()
   const bundle = catalog.activeBundle
 
+  if (graph.nodes.length === 0 && graph.groups.length === 0) {
+    layoutRef.value = {
+      nodes: [],
+      ports: [],
+      edges: [],
+      labels: [],
+      bounds: EMPTY_BOUNDS,
+      width: 0,
+      height: 0,
+    }
+    layoutUsedFallbackRef.value = false
+    return
+  }
+
+  // The label boxes ELK is told to route around. Derived from the same
+  // presentation the renderer draws, so the reserved width and the drawn width
+  // cannot disagree (10.2).
+  const nameById = new Map<string, string>(
+    [...graph.nodes, ...graph.groups].map((node) => [node.id, node.label]),
+  )
+  const edgeInputs = edgeLayoutInputs(graph, {
+    level: explorer.level,
+    nodeLabel: (id) => nameById.get(id),
+  })
+
   const key = layoutCacheKey({
     bundleId: bundle?.id ?? '',
-    revision: bundle?.schemaVersion ?? '',
+    schemaVersion: bundle?.schemaVersion ?? '',
     scenarioId: catalog.activeScenarioId ?? '',
     level: explorer.level,
     flowKinds: explorer.enabledFlowKinds,
     verificationStates: explorer.enabledVerificationStates,
+    // Without this the identity fields above are the whole key, and rescanning
+    // an edited folder — same bundle id, same scenario, same level — would serve
+    // the previous layout for a graph that no longer exists (13.2).
+    inputs: layoutInputSignature(graph, edgeInputs),
   })
 
   // A cache hit is applied synchronously so returning to a previous filter
@@ -113,7 +154,7 @@ async function runLayout(): Promise<void> {
   layoutRef.value = null
 
   try {
-    const result = await layoutGraph(key, graph, layoutCache)
+    const result = await layoutGraph(key, graph, edgeInputs, layoutCache)
     if (token !== layoutToken) return
     layoutRef.value = result
     layoutUsedFallbackRef.value = false
@@ -280,6 +321,7 @@ const elements = computed<VueFlowElements>(() => {
   return toVueFlowElements({
     graph: graphRef.value,
     layout: currentLayout,
+    level: useExplorerStore().level,
     componentsById: bundle?.index.componentsById ?? new Map(),
     highlightedNodeIds: highlights.value.nodeIds,
     highlightedEdgeIds: highlights.value.edgeIds,

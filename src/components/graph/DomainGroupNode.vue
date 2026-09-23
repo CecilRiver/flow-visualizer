@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { Handle, Position } from '@vue-flow/core'
+import { Handle } from '@vue-flow/core'
 
 import type { GroupNodeData } from '@/adapters/vueFlow/nodeTypes'
+
+import { handlePosition, handleStyle } from './handlePlacement'
 
 /**
  * A display-only container for the L2 children of one capability domain
@@ -24,16 +26,20 @@ defineProps<{
       <span class="domain-group__count">{{ data.childCount }} 个组件</span>
     </header>
 
-    <!-- Edges retarget onto the container, so it needs its own handles. -->
+    <!--
+      Edges retarget onto the container, so it has render ports of its own (7.3).
+      On a container the layout asks ELK to distribute them along a side, since
+      the box they sit on is the one ELK is still computing — so these are read
+      back from the result like every other port, not derived from a formula.
+    -->
     <Handle
-      id="in"
-      type="target"
-      :position="Position.Left"
-    />
-    <Handle
-      id="out"
-      type="source"
-      :position="Position.Right"
+      v-for="port in data.ports"
+      :id="port.id"
+      :key="port.id"
+      :type="port.end"
+      :position="handlePosition(port.side)"
+      :style="handleStyle(port)"
+      :title="port.semanticPortId ?? ''"
     />
   </div>
 </template>
