@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 
 import { installDirectoryPickerMock } from './support/directoryPicker'
 import { VALID_MODEL, loadFixtureFolder } from './support/fixtures'
+import { collectNodeBoxes, switchToLevel } from './support/readability'
 
 /**
  * DESIGN.md 19.3: 视觉截图覆盖 1440×900 和 1024×768。
@@ -102,5 +103,82 @@ test.describe('视觉截图与整体布局', () => {
 
     await expectNoHorizontalOverflow(page)
     await page.screenshot({ path: `${SHOT_DIR}/${testInfo.project.name}-inspector.png` })
+  })
+
+  /*
+   * One picture per projection level, and the assertion that makes the pictures
+   * worth taking.
+   *
+   * A screenshot is an artefact for a human, so on its own it cannot fail. The
+   * assertion attached to it is the one a reader would make looking at it: every
+   * node at this level is inside the canvas. That is a real risk per level
+   * rather than in general — each level replaces the drawing with one of a
+   * different size, and the fit has to be re-run for it (GRAPH_READABILITY_
+   * DESIGN.md 11), which is exactly where a stale viewport shows up as a drawing
+   * cropped at the edge.
+   *
+   * The node boxes are read for every level; the screenshots are written into
+   * `test-results`, which is generated output and never committed, so the
+   * repository gains no binary files from this.
+   */
+  for (const level of [0, 1, 2] as const) {
+    test(`L${level}：整层图形落在画布内`, async ({ page }, testInfo) => {
+      await pickFolder(page)
+      await switchToLevel(page, level)
+
+      const canvas = await page.locator('.explorer-view__canvas').boundingBox()
+      expect(canvas).not.toBeNull()
+      if (canvas === null) return
+
+      const nodes = await collectNodeBoxes(page)
+      expect(nodes.length, `L${String(level)} 没有画出任何节点`).toBeGreaterThan(0)
+
+      const outside = nodes.filter(
+        (node) =>
+          node.x < canvas.x ||
+          node.y < canvas.y ||
+          node.x + node.width > canvas.x + canvas.width ||
+          node.y + node.height > canvas.y + canvas.height,
+      )
+      expect(
+        outside.map((node) => node.id),
+        `L${String(level)} 有节点被画布裁切，说明这一层没有重新 fit`,
+      ).toEqual([])
+
+      await page.screenshot({ path: `${SHOT_DIR}/${testInfo.project.name}-L${String(level)}.png` })
+    })
+  }
+
+  /*
+   * DESIGN.md 16.2: "focus ring 不得被 `outline: none` 移除".
+   *
+   * Asserted here rather than in a component test because only a browser loads
+   * the stylesheets that disagree. `theme-default.css` switches the ring off on
+   * a node with a selector of three classes, and the rule that puts it back has
+   * to match that weight and be imported later — a jsdom mount loads neither
+   * file, so a component test would only ever confirm that our own rule says
+   * `outline: 2px`, which was never the question.
+   */
+  test('节点获得键盘焦点时画出 focus ring（DESIGN.md 16.2）', async ({ page }) => {
+    await pickFolder(page)
+
+    const node = page.locator('.vue-flow__node').first()
+    await node.focus()
+    expect(await node.evaluate((element) => element === document.activeElement)).toBe(true)
+
+    const ring = await node.evaluate((element) => {
+      const style = getComputedStyle(element)
+      return {
+        style: style.outlineStyle,
+        width: Number.parseFloat(style.outlineWidth),
+        color: style.outlineColor,
+      }
+    })
+
+    expect(ring.style, '焦点环被 outline: none 关掉了').not.toBe('none')
+    expect(ring.width).toBeGreaterThan(0)
+    // A ring in the transparent colour would satisfy the two checks above and
+    // still be invisible, which is the state this test exists to rule out.
+    expect(ring.color).not.toBe('rgba(0, 0, 0, 0)')
   })
 })

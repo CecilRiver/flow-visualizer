@@ -284,12 +284,25 @@ describe('toVueFlowElements — 只读与静态语义', () => {
   })
 
   /*
-   * DESIGN.md 13.4 gives feedback edges a 反向箭头: the arrowhead belongs at the
-   * source end, because a feedback flow runs back against the direction the
-   * layout draws. Colour and dashing already separate it from a forward edge;
-   * only the arrow states which way it actually goes.
+   * GRAPH_READABILITY_DESIGN.md 9.2: the arrow points at `to`, the consumer,
+   * and a feedback edge is no exception.
+   *
+   * What makes a feedback flow feedback is that it runs against the level's
+   * reading direction — the route doubles back — and the dashed line plus the
+   * 反馈 wording say so. The arrowhead is the one mark that states which way the
+   * data goes, so it has to agree with the configuration even when the drawing
+   * runs the other way. Pointing it at the source said the data arrives at the
+   * component that produced it.
+   *
+   * This used to assert the opposite, from a reading of DESIGN.md 13.4's
+   * 反向箭头 that contradicts 9.2. A browser probe settled it rather than the
+   * reasoning: with `markerStart`, the tip landed on the source node's edge and
+   * pointed *into* it — Vue Flow's markers are `auto-start-reverse`, and per SVG
+   * that reverses only a `marker-start`, so the head sat at the wrong end
+   * pointing the wrong way. The end-to-end check of where the tip really lands
+   * is in `e2e/readability.spec.ts`.
    */
-  it('反馈边的箭头在源端，普通边的箭头在目标端', () => {
+  it('每条边的箭头都在目标端，反馈边也一样', () => {
     const graph = graphAt(2)
     const elements = build(graph)
 
@@ -302,10 +315,10 @@ describe('toVueFlowElements — 只读与静态语义', () => {
     expect(feedback?.data?.feedback).toBe(true)
     expect(forward?.data?.feedback).toBe(false)
 
-    expect(feedback?.markerStart).toBeDefined()
-    expect(feedback?.markerEnd).toBeUndefined()
-    expect(forward?.markerEnd).toBeDefined()
-    expect(forward?.markerStart).toBeUndefined()
+    for (const edge of [feedback, forward]) {
+      expect(edge?.markerEnd, edge?.id).toBeDefined()
+      expect(edge?.markerStart, edge?.id).toBeUndefined()
+    }
   })
 
   it('每条边恰好只有一个箭头，方向不重复也不丢失', () => {
@@ -1031,11 +1044,55 @@ describe('toVueFlowElements — 节点数据契约', () => {
     expect(data.summary).toBe('保持姿态')
   })
 
+  /*
+   * The name is the node's only complete statement of what it is: the card can
+   * afford a kind badge and a two-character verification mark, so the state in
+   * full has to live here (GRAPH_READABILITY_DESIGN.md 5.1, 5.2).
+   *
+   * It used to stop at the kind, with the full state on the verification chip's
+   * `title` — a pointer-only affordance. The edge's name already ended in
+   * `证据：…`; this is the node half of the same rule.
+   */
   it('ariaLabel 用中文 kind 标签，供屏幕阅读器与 E2E 选择器使用', () => {
     const elements = build(graphAt(2))
     const node = nodeOf(elements, 'l2.attitude')
+    const component = FIXTURE_COMPONENTS_BY_ID.get('l2.attitude')
+    if (component === undefined) throw new Error('fixture component missing')
 
-    expect(node.ariaLabel).toBe(`l2.attitude（${COMPONENT_KIND_LABEL.controller}）`)
+    expect(node.ariaLabel).toBe(
+      `l2.attitude（${COMPONENT_KIND_LABEL.controller}，证据：${VERIFICATION_LABEL[component.verification]}）`,
+    )
+  })
+
+  /*
+   * The other half of the same rule. A node whose component the lookup never
+   * found — the graph was built from one source and the component table from
+   * another — has no state to report, and the name says 未声明 rather than going
+   * quiet. Silence would let an unverified node read as a checked one.
+   */
+  it('查不到组件的节点，ariaLabel 说的是「未声明」而不是省略', () => {
+    const elements = build(graphAt(2), { componentsById: new Map<string, Component>() })
+    const data = dataOf<BusinessNodeData>(nodeOf(elements, 'l2.attitude'))
+
+    // The two halves disagree on purpose: what gets drawn takes the weakest
+    // state, what gets announced says there was nothing to report.
+    expect(data.verification).toBe('inferred')
+    expect(data.verificationLabel).toBe('未声明')
+    expect(nodeOf(elements, 'l2.attitude').ariaLabel).toContain('证据：未声明')
+  })
+
+  /*
+   * A group is a display-only container, not a component: the verification
+   * states belong to what is inside it. So its name has no evidence clause —
+   * stating one would attribute a child's state to the box drawn round it.
+   */
+  it('分组容器没有 verification，ariaLabel 也不编造一个', () => {
+    const elements = build(graphAt(2))
+    const group = elements.nodes.find((node) => node.type === NODE_TYPE.group)
+    expect(group, '夹具在 L2 应当画出分组容器').toBeDefined()
+
+    expect(group?.ariaLabel).toBeDefined()
+    expect(group?.ariaLabel).not.toContain('证据：')
   })
 
   /*

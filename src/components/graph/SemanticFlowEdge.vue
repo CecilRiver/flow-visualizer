@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { EdgeLabelRenderer, type EdgeProps } from '@vue-flow/core'
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { hasRoute, type SemanticEdgeData } from '@/adapters/vueFlow/edgeTypes'
 import { GRAPH_READABILITY } from '@/layout/readabilityOptions'
@@ -139,10 +139,96 @@ const labelStyle = computed(() => {
 const markStyle = computed(() => ({
   color: `var(${verificationTokenName(props.data.verification)})`,
 }))
+
+/**
+ * Whether the full sentence is showing, as a hover or focus tooltip.
+ *
+ * Focus counts as much as hover, and that is the whole point of this: the
+ * sentence used to be an SVG `<title>`, which browsers show on pointer hover
+ * only. The information was already in the accessible name, so nothing was lost
+ * for a screen reader — what was lost was the *sighted* keyboard user, who could
+ * Tab onto an edge, hear nothing, and see nothing either
+ * (GRAPH_READABILITY_DESIGN.md 5.1, 17.3).
+ */
+const active = ref(false)
+
+/** This component's own `<g>`, used to find the element Vue Flow made focusable. */
+const root = ref<SVGGElement | null>(null)
+
+/**
+ * Vue Flow's wrapper around this component, which is what carries the tab stop.
+ *
+ * `EdgeWrapper` sets `tabindex="0"` on a `<g class="vue-flow__edge">` it renders
+ * *around* the edge component, and our `<g>` is a child of it. `focusin` bubbles
+ * upward and never downward, so a handler on our own element cannot hear focus
+ * landing on the wrapper — and the browser makes both of them tab stops, so the
+ * tooltip opened at one stop and stayed shut at the next.
+ *
+ * The listener is attached in `onMounted` rather than declared in the template
+ * because the element belongs to Vue Flow, not to this component. Vue patches
+ * that wrapper in place, so the listener survives re-renders; it is removed on
+ * unmount so a torn-down edge cannot keep a live handler on a recycled node.
+ */
+let focusTarget: Element | null = null
+
+const activate = (): void => {
+  active.value = true
+}
+const deactivate = (): void => {
+  active.value = false
+}
+
+onMounted(() => {
+  focusTarget = root.value?.closest('.vue-flow__edge') ?? null
+  focusTarget?.addEventListener('focusin', activate)
+  focusTarget?.addEventListener('focusout', deactivate)
+})
+
+onBeforeUnmount(() => {
+  focusTarget?.removeEventListener('focusin', activate)
+  focusTarget?.removeEventListener('focusout', deactivate)
+  focusTarget = null
+})
+
+/**
+ * Where the tooltip hangs, in graph coordinates.
+ *
+ * `EdgeLabelRenderer` teleports into the already-transformed pane, so a graph
+ * coordinate goes straight into `left`/`top`. The CSS lifts the bubble by its
+ * own height, so this is the point it sits *above*.
+ *
+ * Above the label's box when the layout placed one there — the reader is looking
+ * at that box, and a tooltip elsewhere would make them hunt for it. Only a
+ * placed box counts: an unplaced label is stored at the origin with
+ * `visibleByDefault: false`, so anchoring to it would put every tooltip in the
+ * graph's top-left corner.
+ *
+ * Failing that, the midpoint of the two route ends. That is an approximation —
+ * it is not the midpoint *along* the route — but the route is a polyline
+ * between two nodes, so the midpoint of its ends is inside the drawing and next
+ * to the line, which is all a fallback has to be.
+ */
+const tooltipAnchor = computed(() => {
+  const box = props.data.labelBox
+  if (box !== null && box.visibleByDefault) return { x: box.x + box.width / 2, y: box.y }
+
+  const sections = props.data.sections
+  const start = sections.at(0)?.startPoint
+  const end = sections.at(-1)?.endPoint
+  if (start === undefined || end === undefined) return { x: props.sourceX, y: props.sourceY }
+  return { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }
+})
 </script>
 
 <template>
+  <!--
+    Hover and focus both open the tooltip below, and `focusin`/`focusout` are
+    what make the keyboard half work: the focusable element is this group, and
+    focus events bubble where `focus` does not — so the handler does not need to
+    know which descendant holds the focus.
+  -->
   <g
+    ref="root"
     class="semantic-edge"
     :data-edge-id="id"
     :class="{
@@ -151,32 +237,41 @@ const markStyle = computed(() => ({
       'is-feedback': data.feedback,
     }"
     :style="{ '--edge-color': style.color }"
+    @mouseenter="activate"
+    @mouseleave="deactivate"
+    @focusin="activate"
+    @focusout="deactivate"
   >
-    <!--
-      The full sentence hangs on the edge, not on the label. The label is
-      `pointer-events: none` (6.3), so a tooltip anchored to it could never be
-      reached; SVG's own `<title>` gives the edge a native hover tooltip with no
-      JavaScript, and says exactly what the accessible name already says.
-    -->
     <!--
       `data-edge-id` is on both this group and the label below, so the geometry
       measurement can name the edge it is complaining about. Without it a
       failure over a route in the wrong place would report coordinates and no
       identity.
     -->
-    <title>{{ presentation.accessibleText }}</title>
 
     <!-- Thick invisible companion: a 1.25px line is hard to click. -->
     <path
       class="semantic-edge__hit"
       :d="path"
     />
+    <!--
+      The arrowhead goes on the `to` end, and only there (9.2). `markerStart` is
+      deliberately never bound: two heads would say the flow runs both ways,
+      which is the one thing a directed dependency diagram must not say.
+
+      This binding is what actually draws the arrow. The projection asks Vue Flow
+      for a marker, and Vue Flow emits the `<marker>` definition for it — but a
+      definition nothing references paints nothing, and the built-in edge types
+      are the ones that bind it. A custom renderer has to do it itself, and
+      without this line every edge in the graph was drawn headless.
+    -->
     <path
       class="semantic-edge__line"
       :d="path"
       :stroke="style.color"
       :stroke-width="style.strokeWidth"
       :stroke-dasharray="strokeDash"
+      :marker-end="markerEnd"
       fill="none"
     />
   </g>
@@ -209,6 +304,25 @@ const markStyle = computed(() => ({
         class="semantic-edge__mark"
         :style="markStyle"
       >{{ presentation.verificationMark }}</span>
+    </div>
+
+    <!--
+      Mounted only while the edge is hovered or focused, so a graph with fifty
+      edges has one tooltip in the DOM rather than fifty (19). It says what the
+      accessible name already says, in full and at every zoom: hiding the inline
+      label below the threshold must not hide the sentence.
+
+      Anchored to the edge, never to the label — the label is
+      `pointer-events: none` (6.3), so a tooltip hanging off it could never be
+      reached by a pointer at all.
+    -->
+    <div
+      v-if="active"
+      class="semantic-edge__tooltip"
+      role="tooltip"
+      :style="{ left: `${String(tooltipAnchor.x)}px`, top: `${String(tooltipAnchor.y)}px` }"
+    >
+      {{ presentation.accessibleText }}
     </div>
   </EdgeLabelRenderer>
 </template>
@@ -277,6 +391,36 @@ const markStyle = computed(() => ({
 
 .semantic-edge__label.is-dimmed {
   opacity: var(--graph-dimmed-opacity);
+}
+
+/*
+ * The full sentence, for a reader who is pointing at or tabbed onto this edge.
+ *
+ * `left`/`top` come from the component as graph coordinates; the transforms
+ * centre the bubble on the anchor and lift it clear of what it describes.
+ * `max-content` width with a cap, because the sentence is one line by nature and
+ * a bubble that wrapped at its container's width would be a column.
+ *
+ * `pointer-events: none` for the same reason the label has it (6.3): the bubble
+ * covers a patch of canvas, and taking clicks there would mean clicking near an
+ * edge selected whatever the tooltip happened to be covering. Nothing depends on
+ * hovering it — it closes when the pointer or the focus leaves the edge.
+ */
+.semantic-edge__tooltip {
+  position: absolute;
+  z-index: 1;
+  transform: translate(-50%, calc(-100% - 8px));
+  width: max-content;
+  max-width: 320px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-panel);
+  box-shadow: var(--shadow-md);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+  color: var(--text-primary);
+  pointer-events: none;
 }
 
 /*

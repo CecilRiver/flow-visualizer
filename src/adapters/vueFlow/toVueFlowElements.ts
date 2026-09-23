@@ -45,10 +45,19 @@ const READ_ONLY_NODE_FLAGS = {
 /**
  * The arrowhead every edge carries at its target end (DESIGN.md 13.4).
  *
- * A feedback edge gets it at the *source* end instead: the flow runs back the
- * way the layout draws it, and an arrowhead at the far end would state the
- * opposite of the configuration. Direction is the one thing about a feedback
- * edge that no amount of colour or dashing can convey.
+ * Every edge, feedback included: the arrow always points at `to`, the consumer
+ * (GRAPH_READABILITY_DESIGN.md 9.2). A feedback flow is still a flow — what
+ * makes it feedback is that it runs *against* the level's reading direction, so
+ * the route doubles back, and that is what the dashed line and the 反馈 wording
+ * say. Turning the arrowhead round to point at the provider said the data
+ * travels to the component that produced it, which is the opposite of what the
+ * configuration declares.
+ *
+ * The old `markerStart` variant did not even point where it was meant to. Vue
+ * Flow sets `orient="auto-start-reverse"` on its markers, and per SVG that only
+ * reverses a `marker-start`: on `marker-end` it behaves as plain `auto`. So the
+ * arrow sat at the source end and pointed back out of the path — into the node
+ * it started from.
  */
 const ARROW_MARKER = { type: MarkerType.ArrowClosed, width: 14, height: 14 } as const
 
@@ -243,6 +252,28 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
   const nodes: VueFlowNode[] = []
   const missingPositions: string[] = []
 
+  /**
+   * The node's accessible name: its label, its kind, and its verification state.
+   *
+   * The card can only afford a glyph and a short form, so the state in full has
+   * to live somewhere a screen reader reaches (GRAPH_READABILITY_DESIGN.md 5.1,
+   * 5.2). It used to live on the verification chip's `title`, which is a
+   * pointer-only affordance — a keyboard user tabbing to the node heard the
+   * short form and nothing else. The edge's name already ends in `证据：…`
+   * (`edgePresentation.ts`), so this is the node half of the same rule.
+   *
+   * A group is skipped, not defaulted: it is a display-only container and the
+   * states belong to the components inside it, so it has none to report.
+   */
+  const accessibleName = (
+    node: ProjectedNode,
+    data: BusinessNodeData | ExternalNodeData | GroupNodeData,
+  ): string => {
+    const kind = labelFor(COMPONENT_KIND_LABEL, node.kind)
+    if (!('verificationLabel' in data)) return `${node.label}（${kind}）`
+    return `${node.label}（${kind}，证据：${data.verificationLabel}）`
+  }
+
   const buildNode = (
     node: ProjectedNode,
     parentGroupId: string | undefined,
@@ -291,7 +322,7 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
         .join(' '),
       // Vue Flow renders both of these onto the node element, which is what the
       // E2E selectors and screen readers key off.
-      ariaLabel: `${node.label}（${labelFor(COMPONENT_KIND_LABEL, node.kind)}）`,
+      ariaLabel: accessibleName(node, data),
       ...READ_ONLY_NODE_FLAGS,
     }
 
@@ -405,10 +436,9 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
       // No animation: the graph is static business semantics, and motion would
       // read as live telemetry (DESIGN.md 10.5, 13.4).
       animated: false,
-      // Feedback runs the other way, so its arrowhead moves to the far end.
-      ...(edge.feedback
-        ? { markerStart: ARROW_MARKER }
-        : { markerEnd: ARROW_MARKER }),
+      // One convention for every edge, feedback included: the arrow points at
+      // the consumer. See `ARROW_MARKER` for why the feedback case has none.
+      markerEnd: ARROW_MARKER,
       class: ['fv-edge', highlighted ? 'is-highlighted' : '', data.dimmed ? 'is-dimmed' : '']
         .filter(Boolean)
         .join(' '),

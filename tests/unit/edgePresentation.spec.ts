@@ -129,11 +129,14 @@ describe('edgePresentation 的无障碍文本', () => {
     expect(atL1.accessibleText).toBe(atL2.accessibleText)
   })
 
-  it('隐藏标签的低缩放不影响无障碍名：文本在投影上，不在视图上', () => {
-    // 5.3 hides labels below a zoom threshold. `edgePresentation` has no zoom
-    // input at all, which is what guarantees a screen reader still hears it.
-    expect(present().accessibleText).toContain('姿态角速率控制律计算')
-  })
+  /*
+   * 5.3 hides labels below a zoom threshold, and the claim that this costs a
+   * screen reader nothing used to be asserted here — against a function with no
+   * zoom parameter at all. It passed for every zoom because no zoom reaches it,
+   * which is true and worth nothing: the property belongs to the renderer, which
+   * is what actually decides whether a label is drawn. It is asserted in
+   * `tests/component/GraphReadability.spec.ts`, where the zoom bucket is real.
+   */
 
   it('反馈边仍然说出真实 kind，画布上的 反馈 只是绘制选择', () => {
     const presentation = present({ feedback: true })

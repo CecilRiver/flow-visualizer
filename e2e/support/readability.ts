@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import { expect, type Locator, type Page } from '@playwright/test'
 
 /**
  * Measures the drawn graph so label placement can be judged by geometry rather
@@ -8,6 +8,11 @@ import type { Page } from '@playwright/test'
  * deliberately does not re-derive label boxes from the layout result: the point
  * of this module is to catch the case where the layout believes a label fits
  * and the browser disagrees.
+ *
+ * The first few exports are the exception: they drive the view rather than
+ * measure it. They live here because every measurement below needs the same
+ * precondition — a settled viewport for the level being looked at — and two
+ * specs now need it, so it is written once.
  */
 
 /** A rectangle in viewport coordinates, as the browser reports it. */
@@ -53,6 +58,69 @@ export interface DrawnLine {
    * transform, so these are directly comparable with `getBoundingClientRect`.
    */
   points: Array<{ x: number; y: number }>
+}
+
+/** The node count each projection is expected to draw, groups included (16 = 11 + 5). */
+export const DRAWN_NODES = { 0: 4, 1: 9, 2: 16 } as const
+
+/** The level button, found by its `L{n}` badge rather than by position. */
+export function levelButton(page: Page, level: 0 | 1 | 2): Locator {
+  return page.locator('.level-switcher__option', { hasText: `L${String(level)}` })
+}
+
+/** The transform Vue Flow is applying to the graph, as `scale(...)`. */
+export async function viewportTransform(page: Page): Promise<string> {
+  return page.evaluate(
+    () => document.querySelector<HTMLElement>('.vue-flow__transformationpane')?.style.transform ?? '',
+  )
+}
+
+/**
+ * Waits for the viewport to stop moving after a level change.
+ *
+ * The fit is applied asynchronously, and the node count settles before it does.
+ * Measuring in between reads the previous graph's framing, which is exactly the
+ * defect 11 is about — so the transform has to be seen to hold still, not
+ * merely to have been set once. A screenshot taken in that gap is just as
+ * wrong, which is why this is shared rather than private to the measurement.
+ */
+export async function waitForViewportSettled(page: Page): Promise<void> {
+  let previous = await viewportTransform(page)
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    await page.waitForTimeout(50)
+    const current = await viewportTransform(page)
+    if (current !== '' && current === previous) return
+    previous = current
+  }
+}
+
+/**
+ * Switches projection and waits for the redraw to land.
+ *
+ * The `aria-pressed` flag flips on the click, while the node boxes are replaced
+ * asynchronously by the layout. Waiting on the settled node count is what keeps
+ * a measurement from landing on the previous level's geometry.
+ */
+export async function switchToLevel(page: Page, level: 0 | 1 | 2): Promise<void> {
+  await levelButton(page, level).click()
+  await expect(levelButton(page, level)).toHaveAttribute('aria-pressed', 'true')
+  await expect(page.locator('.vue-flow__node')).toHaveCount(DRAWN_NODES[level])
+  await waitForViewportSettled(page)
+}
+
+/** The viewport transform, decomposed. */
+export interface Viewport {
+  x: number
+  y: number
+  zoom: number
+}
+
+/** Reads `translate(...)px scale(...)` back into numbers. */
+export async function readViewport(page: Page): Promise<Viewport> {
+  const transform = await viewportTransform(page)
+  const match = /translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)\s*scale\(([\d.]+)\)/.exec(transform)
+  if (match === null) throw new Error(`无法解析视口变换：${transform}`)
+  return { x: Number(match[1]), y: Number(match[2]), zoom: Number(match[3]) }
 }
 
 /** Two things that must not share pixels, and the area they do share. */
@@ -267,3 +335,140 @@ export function formatOverlaps(kind: string, overlaps: readonly Overlap[]): stri
     (overlap) => `${kind} ${overlap.a} × ${overlap.b} (${overlap.area.toFixed(0)}px²)`,
   )
 }
+
+/** A label box that does not fit inside the box it is drawn in. */
+export interface ClippedLabel {
+  edgeId: string
+  /** Which edge of `inside` the label crosses. */
+  side: 'left' | 'top' | 'right' | 'bottom'
+  /** How far past it, in CSS pixels. Negative means fully clear. */
+  overflow: number
+}
+
+/**
+ * Labels that are drawn outside the box they are supposed to live in
+ * (GRAPH_READABILITY_DESIGN.md 18.5).
+ *
+ * The overlap measurement above asks whether a label covers something else. This
+ * asks the opposite question — whether the reader can see the label at all. A
+ * box pushed past the canvas edge, or under the Inspector panel, is not an
+ * overlap with anything: it is simply gone, and no collision assertion can
+ * notice, because a label nobody can see collides with nothing.
+ *
+ * `tolerance` is in CSS pixels and is not decoration. Sub-pixel rounding on a
+ * scaled viewport routinely puts a label a fraction of a pixel past the edge,
+ * and a strict comparison would report every flush-fitting label as clipped.
+ */
+export function findClippedLabels(
+  labels: readonly LabelBox[],
+  inside: Rect,
+  tolerance = 1,
+): ClippedLabel[] {
+  const clipped: ClippedLabel[] = []
+
+  for (const label of labels) {
+    const overflow = {
+      left: inside.x - label.x,
+      top: inside.y - label.y,
+      right: label.x + label.width - (inside.x + inside.width),
+      bottom: label.y + label.height - (inside.y + inside.height),
+    }
+    for (const [side, amount] of Object.entries(overflow) as Array<
+      [ClippedLabel['side'], number]
+    >) {
+      if (amount > tolerance) clipped.push({ edgeId: label.edgeId, side, overflow: amount })
+    }
+  }
+
+  return clipped
+}
+
+/** One line per clipped label, in the shape a test failure should read. */
+export function formatClipped(labels: readonly ClippedLabel[]): string[] {
+  return labels.map(
+    (label) => `${label.edgeId} 被裁切：越过 ${label.side} ${label.overflow.toFixed(1)}px`,
+  )
+}
+
+/** Where an edge's route starts and ends, as the browser paints it. */
+export interface DrawnEnds {
+  edgeId: string
+  feedback: boolean
+  /**
+   * The route's final point in viewport coordinates.
+   *
+   * This is the arrowhead's tip. Vue Flow's marker is an `ArrowClosed` polyline
+   * whose tip vertex is at the marker's own origin, and the marker's `refX`/
+   * `refY` are 0, so the tip is placed exactly on the path's last point. Reading
+   * it off the path is therefore a measurement of the drawn arrow, not a
+   * restatement of the marker slot it was configured with.
+   */
+  tip: { x: number; y: number }
+  start: { x: number; y: number }
+  /** The edge's endpoints, from the schema rather than from the geometry. */
+  source: string
+  target: string
+}
+
+/**
+ * Every drawn route's two ends, joined with the endpoints the projection named.
+ *
+ * The names come from the label's own `data-source`/`data-target`, which the
+ * renderer copies straight from the projected edge. They are not parsed out of
+ * the edge id: a container id contains colons of its own, so splitting on them
+ * would misread exactly the edges whose endpoints are groups.
+ *
+ * A label is only in the DOM once the zoom is past the hidden threshold, so the
+ * caller has to have zoomed in — see `zoomUntilLabelsAreDrawn`.
+ */
+export async function collectDrawnEnds(page: Page): Promise<DrawnEnds[]> {
+  return page.evaluate(() => {
+    const named = new Map<string, { source: string; target: string }>()
+    for (const label of document.querySelectorAll('.semantic-edge__label')) {
+      const edgeId = label.getAttribute('data-edge-id')
+      if (edgeId === null) continue
+      named.set(edgeId, {
+        source: label.getAttribute('data-source') ?? '',
+        target: label.getAttribute('data-target') ?? '',
+      })
+    }
+
+    const ends: Array<{
+      edgeId: string
+      feedback: boolean
+      tip: { x: number; y: number }
+      start: { x: number; y: number }
+      source: string
+      target: string
+    }> = []
+
+    for (const group of document.querySelectorAll('.semantic-edge')) {
+      const path = group.querySelector<SVGPathElement>('.semantic-edge__line')
+      if (path === null) continue
+      const matrix = path.getScreenCTM()
+      if (matrix === null) continue
+      const total = path.getTotalLength()
+      if (total === 0) continue
+
+      const edgeId = group.getAttribute('data-edge-id') ?? ''
+      const endpoint = named.get(edgeId)
+      const at = (length: number): { x: number; y: number } => {
+        const local = path.getPointAtLength(length)
+        const screen = new DOMPoint(local.x, local.y).matrixTransform(matrix)
+        return { x: screen.x, y: screen.y }
+      }
+
+      ends.push({
+        edgeId,
+        feedback: group.classList.contains('is-feedback'),
+        tip: at(total),
+        start: at(0),
+        source: endpoint?.source ?? '',
+        target: endpoint?.target ?? '',
+      })
+    }
+
+    return ends
+  })
+}
+
