@@ -6,6 +6,7 @@ import { LayoutCache, computeElkLayout, layoutCacheKey, layoutGraph } from '@/la
 import { assignColumns, computeFallbackLayout } from '@/layout/fallbackLayout'
 import { GROUP_MIN_SIZE, sizeForNode } from '@/layout/nodeMetrics'
 
+import { expectNoOverlaps } from './helpers/geometry'
 import { projectFixture } from './helpers/projectFixture'
 
 function graphAt(level: GraphLevel): ProjectedGraph {
@@ -72,20 +73,10 @@ describe('computeElkLayout', () => {
     const contained = new Set(
       graph.nodes.filter((node) => node.parentGroupId !== undefined).map((node) => node.id),
     )
-    const topLevel = result.nodes.filter((node) => !contained.has(node.id))
-    for (let a = 0; a < topLevel.length; a += 1) {
-      for (let b = a + 1; b < topLevel.length; b += 1) {
-        const first = topLevel[a]
-        const second = topLevel[b]
-        if (first === undefined || second === undefined) continue
-        const overlaps =
-          first.x < second.x + second.width &&
-          second.x < first.x + first.width &&
-          first.y < second.y + second.height &&
-          second.y < first.y + first.height
-        expect(overlaps, `${first.id} overlaps ${second.id}`).toBe(false)
-      }
-    }
+    expectNoOverlaps(
+      result.nodes.filter((node) => !contained.has(node.id)),
+      'computeElkLayout L2',
+    )
   })
 
   it('同一输入两次布局产生完全相同的坐标', async () => {
@@ -110,7 +101,21 @@ describe('computeElkLayout', () => {
   it('正交路由为边生成折点', async () => {
     const result = await computeElkLayout(graphAt(1))
     expect(result.edges.length).toBeGreaterThan(0)
-    expect(result.edges.every((edge) => edge.bendPoints.length >= 0)).toBe(true)
+
+    // The assertion here used to be `bendPoints.length >= 0`, which holds for
+    // every array and so could never fail. Orthogonal routing means at least
+    // one edge has to turn, and every turn it reports has to be a real point.
+    const routed = result.edges.filter((edge) => edge.bendPoints.length > 0)
+    expect(routed.length).toBeGreaterThan(0)
+    for (const edge of routed) {
+      for (const point of edge.bendPoints) {
+        expect(
+          Number.isFinite(point.x) && Number.isFinite(point.y),
+          `non-finite bend point on ${edge.id}`,
+        ).toBe(true)
+      }
+    }
+
     expect(Number.isFinite(result.width) && result.width > 0).toBe(true)
     expect(Number.isFinite(result.height) && result.height > 0).toBe(true)
   })
@@ -204,22 +209,10 @@ describe('computeFallbackLayout', () => {
         .filter((node) => node.parentGroupId !== undefined)
         .map((node) => [node.id, node.parentGroupId as string]),
     )
-    const nested = (a: string, b: string): boolean => parentOf.get(a) === b || parentOf.get(b) === a
+    const nested = (first: { id: string }, second: { id: string }): boolean =>
+      parentOf.get(first.id) === second.id || parentOf.get(second.id) === first.id
 
-    for (let a = 0; a < result.nodes.length; a += 1) {
-      for (let b = a + 1; b < result.nodes.length; b += 1) {
-        const first = result.nodes[a]
-        const second = result.nodes[b]
-        if (first === undefined || second === undefined) continue
-        if (nested(first.id, second.id)) continue
-        const overlaps =
-          first.x < second.x + second.width &&
-          second.x < first.x + first.width &&
-          first.y < second.y + second.height &&
-          second.y < first.y + first.height
-        expect(overlaps, `${first.id} overlaps ${second.id}`).toBe(false)
-      }
-    }
+    expectNoOverlaps(result.nodes, 'computeFallbackLayout L2', { mayNest: nested })
 
     expect(result.edges.every((edge) => edge.bendPoints.length === 0)).toBe(true)
     expect(result.width).toBeGreaterThan(0)

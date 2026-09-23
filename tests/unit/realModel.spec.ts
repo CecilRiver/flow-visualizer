@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
@@ -10,6 +10,8 @@ import { computeElkLayout } from '@/layout/elkLayout'
 import { buildOrderMaps, projectScenario } from '@/projection/projectScenario'
 import { selectScenario } from '@/projection/selectScenario'
 
+import { expectNoOverlaps } from './helpers/geometry'
+
 /**
  * Loads the real Stabilize model through the full pipeline.
  *
@@ -18,8 +20,41 @@ import { selectScenario } from '@/projection/selectScenario'
  * viewer and its Schema snapshots (DESIGN.md 20). The suite is skipped when
  * that project is not checked out next to this one.
  */
-// Vitest runs with the project root as cwd; the model project sits beside it.
-const STABILIZE_PATH = resolve(process.cwd(), '../arducopter-flow-model/scenarios/stabilize.yaml')
+const MODEL_PROJECT = 'arducopter-flow-model'
+const MODEL_FILE = 'scenarios/stabilize.yaml'
+
+/** Names of the directories beside this repository, or none if that fails. */
+function siblingDirectories(parent: string): string[] {
+  try {
+    return readdirSync(parent, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+  } catch {
+    // An unreadable parent means no extra candidates, not a broken suite.
+    return []
+  }
+}
+
+/**
+ * Where the model project is looked for, most conventional first.
+ *
+ * It usually sits directly beside this repository, but a workspace may group it
+ * one level down (`ardupilot/arducopter-flow-model`). Probing both keeps the
+ * real-model suite from silently skipping on a machine that does have the model
+ * — a skipped suite reads exactly like a passing one.
+ */
+function candidateModelPaths(): string[] {
+  const parent = resolve(process.cwd(), '..')
+  return [
+    resolve(parent, MODEL_PROJECT, MODEL_FILE),
+    ...siblingDirectories(parent).map((name) => resolve(parent, name, MODEL_PROJECT, MODEL_FILE)),
+  ]
+}
+
+const STABILIZE_PATH =
+  process.env.FLOW_VISUALIZER_MODEL_PATH ??
+  candidateModelPaths().find((candidate) => existsSync(candidate)) ??
+  resolve(process.cwd(), '..', MODEL_PROJECT, MODEL_FILE)
 
 const hasRealModel = existsSync(STABILIZE_PATH)
 
@@ -164,21 +199,10 @@ describe.skipIf(!hasRealModel)('real stabilize model / projection and layout', (
       const contained = new Set(
         graph.nodes.filter((node) => node.parentGroupId !== undefined).map((node) => node.id),
       )
-      const topLevel = result.nodes.filter((node) => !contained.has(node.id))
-
-      for (let a = 0; a < topLevel.length; a += 1) {
-        for (let b = a + 1; b < topLevel.length; b += 1) {
-          const first = topLevel[a]
-          const second = topLevel[b]
-          if (first === undefined || second === undefined) continue
-          const overlaps =
-            first.x < second.x + second.width &&
-            second.x < first.x + first.width &&
-            first.y < second.y + second.height &&
-            second.y < first.y + first.height
-          expect(overlaps, `L${level}: ${first.id} overlaps ${second.id}`).toBe(false)
-        }
-      }
+      expectNoOverlaps(
+        result.nodes.filter((node) => !contained.has(node.id)),
+        `real model L${String(level)}`,
+      )
 
       expect(result.nodes.length).toBe(graph.nodes.length + graph.groups.length)
     }
