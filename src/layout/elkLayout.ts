@@ -353,11 +353,22 @@ export function withLabels(
 /** Cache key inputs (DESIGN.md 10.3): everything that changes the coordinates. */
 export interface LayoutCacheKey {
   bundleId: string
-  revision: string
+  /**
+   * The schema version the bundle declares.
+   *
+   * Named for what it holds. This field spent its life called `revision`, which
+   * reads as a revision of the *content* — and it was in fact the schema
+   * version, the string `0.1`, identical for every bundle written against that
+   * schema. A field that changes name depending on who is reading it is how the
+   * gap below stayed invisible.
+   */
+  schemaVersion: string
   scenarioId: string
   level: number
   flowKinds: readonly string[]
   verificationStates: readonly string[]
+  /** `layoutInputSignature` of the graph about to be laid out (13.2). */
+  inputs: string
 }
 
 /**
@@ -369,17 +380,54 @@ export interface LayoutCacheKey {
  * for as long as the reader stayed on the same scenario — and the symptom
  * (stale coordinates, correct everything else) is close to impossible to read.
  */
-export const LAYOUT_SIGNATURE = 'layout-v2-labels'
+export const LAYOUT_SIGNATURE = 'layout-v3-input-signature'
+
+/**
+ * A digest of everything the layout actually reads (13.2).
+ *
+ * The rest of the key names the *identity* of what is being laid out — bundle,
+ * scenario, level, filters. Identity is not enough. Editing a flow's name and
+ * rescanning the folder leaves every one of those fields identical while
+ * changing the text of a label, and therefore the box ELK was asked to reserve
+ * for it; the next request was a cache hit and the stale layout came back with
+ * label boxes sized for the old text. The drawn label was then wider than the
+ * box that had been checked for collisions — exactly the defect this pass
+ * exists to remove, arriving by a different door.
+ *
+ * Built from `toElkGraph`'s output because that object *is* the layout's input,
+ * by construction. A hand-written list of fields to include is the kind of thing
+ * that goes stale the day someone adds a field to the ELK graph, and it would
+ * fail the same silent way.
+ *
+ * Deliberately not hashed to a fixed width: a hash would trade a real risk — a
+ * collision serving a layout for a different graph, silently — for bytes we do
+ * not need to save. Measured on the real Stabilize model: 1.8 KB / 4.5 KB /
+ * 8.5 KB at L0 / L1 / L2, built in 0.02–0.07 ms. The cache holds twenty, so the
+ * whole cost is under 200 KB and a fraction of a millisecond, against an ELK
+ * run that takes hundreds.
+ */
+export function layoutInputSignature(
+  graph: ProjectedGraph,
+  edgeInputs: ReadonlyMap<string, EdgeLayoutInput> = new Map(),
+): string {
+  // `placementRank` steers the placement pass, which runs after ELK, so it is
+  // not part of the ELK graph and has to be carried alongside it.
+  const ranks = graph.edges.map(
+    (edge) => `${edge.id}:${String(edgeInputs.get(edge.id)?.placementRank ?? '')}`,
+  )
+  return JSON.stringify([toElkGraph(graph, edgeInputs), ranks])
+}
 
 export function layoutCacheKey(key: LayoutCacheKey): string {
   return [
     LAYOUT_SIGNATURE,
     key.bundleId,
-    key.revision,
+    key.schemaVersion,
     key.scenarioId,
     `L${key.level}`,
     [...key.flowKinds].sort().join(','),
     [...key.verificationStates].sort().join(','),
+    key.inputs,
   ].join('|')
 }
 

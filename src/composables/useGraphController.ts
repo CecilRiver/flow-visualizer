@@ -13,7 +13,13 @@ import {
 } from '@/domain/view-model'
 import { edgeLayoutInputs } from '@/layout/edgePresentation'
 import { computeFallbackLayout } from '@/layout/fallbackLayout'
-import { layoutCacheKey, LayoutCache, layoutGraph, type LayoutResult } from '@/layout/elkLayout'
+import {
+  layoutCacheKey,
+  LayoutCache,
+  layoutGraph,
+  layoutInputSignature,
+  type LayoutResult,
+} from '@/layout/elkLayout'
 import type { Box } from '@/layout/layoutBounds'
 import { buildOrderMaps, projectScenario } from '@/projection/projectScenario'
 import { selectScenario } from '@/projection/selectScenario'
@@ -113,11 +119,15 @@ async function runLayout(): Promise<void> {
 
   const key = layoutCacheKey({
     bundleId: bundle?.id ?? '',
-    revision: bundle?.schemaVersion ?? '',
+    schemaVersion: bundle?.schemaVersion ?? '',
     scenarioId: catalog.activeScenarioId ?? '',
     level: explorer.level,
     flowKinds: explorer.enabledFlowKinds,
     verificationStates: explorer.enabledVerificationStates,
+    // Without this the identity fields above are the whole key, and rescanning
+    // an edited folder — same bundle id, same scenario, same level — would serve
+    // the previous layout for a graph that no longer exists (13.2).
+    inputs: layoutInputSignature(graph, edgeInputs),
   })
 
   // A cache hit is applied synchronously so returning to a previous filter

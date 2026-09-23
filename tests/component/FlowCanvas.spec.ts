@@ -79,6 +79,46 @@ describe('FlowCanvas', () => {
     wrapper.unmount()
   })
 
+  it('重新扫描同一 model ID 但内容已改时，不复用旧布局（验收 10）', async () => {
+    /*
+     * The defect this pins, at the level it actually happened.
+     *
+     * The layout cache was keyed on the *identity* of what was being laid out —
+     * bundle id, scenario, level, filters — and every one of those survives a
+     * folder rescan. Editing a flow's name in the YAML and hitting 刷新 therefore
+     * produced a cache hit, and the previous layout was applied to a graph that
+     * no longer existed.
+     *
+     * Object identity is the precise observable: a cache hit returns the very
+     * same `LayoutResult` instance, so `toBe` is true exactly when the stale
+     * layout was served.
+     */
+    const wrapper = mountCanvas()
+    await waitForNodes(wrapper)
+
+    const controller = useGraphController()
+    const first = controller.layout.value
+    expect(first).not.toBeNull()
+
+    // Same bundle id, same scenario, same level, same filters. Only a flow's
+    // display name differs — which changes the label's measured width, and with
+    // it the box ELK was asked to reserve.
+    const catalog = useCatalogStore()
+    catalog.validBundles = [
+      buildFixtureBundle({ 'flow.measurement': '一个明显更长的测量数据流名称' }),
+    ]
+    catalog.activateFirstAvailable()
+
+    await vi.waitFor(
+      () => {
+        expect(controller.layout.value).not.toBe(first)
+      },
+      { timeout: 10_000 },
+    )
+
+    wrapper.unmount()
+  })
+
   it('renders each node through its fixed component type', async () => {
     const wrapper = mountCanvas()
     await waitForNodes(wrapper)

@@ -8,25 +8,28 @@ import {
   computeElkLayout,
   layoutCacheKey,
   layoutGraph,
+  layoutInputSignature,
   toElkGraph,
 } from '@/layout/elkLayout'
 import { assignColumns, computeFallbackLayout } from '@/layout/fallbackLayout'
 import { GROUP_MIN_SIZE, sizeForNode } from '@/layout/nodeMetrics'
 
+import type { FlowInit } from '../fixtures/buildModel'
+
 import { expectNoOverlaps, overlapArea } from './helpers/geometry'
 import { projectFixture } from './helpers/projectFixture'
 
-function graphAt(level: GraphLevel): ProjectedGraph {
-  return projectFixture({
-    level,
-    flows: [
-      { id: 'flow.rc_attitude', from: 'ext.rc', to: 'l2.attitude', kind: 'command' },
-      { id: 'flow.ahrs_attitude', from: 'l2.ahrs', to: 'l2.attitude', kind: 'state' },
-      { id: 'flow.attitude_rate', from: 'l2.attitude', to: 'l2.rate', kind: 'control' },
-      { id: 'flow.rate_motors', from: 'l2.rate', to: 'ext.motors', kind: 'actuation' },
-      { id: 'flow.rate_feedback', from: 'l2.rate', to: 'l2.attitude', kind: 'feedback', feedback: true },
-    ],
-  })
+/** The canonical flow set, kept separate so a test can vary exactly one field. */
+const BASE_FLOWS: readonly FlowInit[] = [
+  { id: 'flow.rc_attitude', from: 'ext.rc', to: 'l2.attitude', kind: 'command' },
+  { id: 'flow.ahrs_attitude', from: 'l2.ahrs', to: 'l2.attitude', kind: 'state' },
+  { id: 'flow.attitude_rate', from: 'l2.attitude', to: 'l2.rate', kind: 'control' },
+  { id: 'flow.rate_motors', from: 'l2.rate', to: 'ext.motors', kind: 'actuation' },
+  { id: 'flow.rate_feedback', from: 'l2.rate', to: 'l2.attitude', kind: 'feedback', feedback: true },
+]
+
+function graphAt(level: GraphLevel, flows: readonly FlowInit[] = BASE_FLOWS): ProjectedGraph {
+  return projectFixture({ level, flows })
 }
 
 describe('nodeMetrics', () => {
@@ -395,37 +398,133 @@ describe('LayoutCache', () => {
     expect(cache.get('c')).toBeDefined()
   })
 
-  it('cache key 覆盖 bundle、revision、scenario、level 与两个过滤器', () => {
+  it('cache key 覆盖 bundle、schemaVersion、scenario、level 与两个过滤器', () => {
     const base = {
       bundleId: 'bundle',
-      revision: 'rev',
+      schemaVersion: '0.1',
       scenarioId: 'scenario',
       level: 2,
       flowKinds: ['command', 'state'] as const,
       verificationStates: ['docs_only'] as const,
+      inputs: 'sig',
     }
     const key = layoutCacheKey(base)
     expect(key).toBe(layoutCacheKey(base))
 
     expect(layoutCacheKey({ ...base, level: 1 })).not.toBe(key)
-    expect(layoutCacheKey({ ...base, revision: 'other' })).not.toBe(key)
+    expect(layoutCacheKey({ ...base, schemaVersion: 'other' })).not.toBe(key)
     expect(layoutCacheKey({ ...base, scenarioId: 'other' })).not.toBe(key)
     expect(layoutCacheKey({ ...base, bundleId: 'other' })).not.toBe(key)
     expect(layoutCacheKey({ ...base, flowKinds: ['command'] })).not.toBe(key)
     expect(layoutCacheKey({ ...base, verificationStates: ['conflict'] })).not.toBe(key)
+    expect(layoutCacheKey({ ...base, inputs: 'other' })).not.toBe(key)
   })
 
   it('过滤器顺序不影响 cache key，避免同一图被重复布局', () => {
     const base = {
       bundleId: 'bundle',
-      revision: 'rev',
+      schemaVersion: '0.1',
       scenarioId: 'scenario',
       level: 2,
       verificationStates: ['docs_only'] as const,
+      inputs: 'sig',
     }
     expect(layoutCacheKey({ ...base, flowKinds: ['state', 'command'] })).toBe(
       layoutCacheKey({ ...base, flowKinds: ['command', 'state'] }),
     )
+  })
+
+  /**
+   * The signature is what makes the key a function of the *data*, not just of
+   * where the data came from. These cover acceptance criteria 9 (same input,
+   * same result) and 10 (edited content must not reuse the old layout).
+   */
+  describe('layoutInputSignature', () => {
+    /** The label inputs `useGraphController` would build for this graph. */
+    function inputsOf(graph: ProjectedGraph) {
+      const nameById = new Map(
+        [...graph.nodes, ...graph.groups].map((node) => [node.id, node.label]),
+      )
+      return edgeLayoutInputs(graph, { level: 2, nodeLabel: (id) => nameById.get(id) })
+    }
+
+    function signatureOf(graph: ProjectedGraph): string {
+      return layoutInputSignature(graph, inputsOf(graph))
+    }
+
+    /**
+     * The projected edge standing for one flow.
+     *
+     * Looked up through `sourceFlowIds` rather than by rebuilding the id, so a
+     * change to the id scheme moves the test with the code instead of quietly
+     * pointing at nothing. The `throw` is what makes that true: a lookup that
+     * silently returned `undefined` would turn the assertions below into
+     * comparisons of `undefined` with `undefined`.
+     */
+    function edgeForFlow(graph: ProjectedGraph, flowId: string): string {
+      const edge = graph.edges.find((candidate) => candidate.sourceFlowIds.includes(flowId))
+      if (edge === undefined) throw new Error(`no projected edge stands for ${flowId}`)
+      return edge.id
+    }
+
+    it('两个独立构建、内容相同的图签名一致（验收 9）', () => {
+      // Two separate projections, not the same object twice: the signature has
+      // to be a function of the content, or a cache rebuilt after a reload
+      // would miss for no reason.
+      expect(signatureOf(graphAt(2))).toBe(signatureOf(graphAt(2)))
+    })
+
+    it('只改 flow 名（标签文本）就改变签名（验收 10）', () => {
+      const renamed = BASE_FLOWS.map((flow) =>
+        flow.id === 'flow.rc_attitude'
+          ? { ...flow, name: 'RC 姿态指令通道（已改名）' }
+          : flow,
+      )
+      const before = graphAt(2)
+      const after = graphAt(2, renamed)
+
+      const edgeId = edgeForFlow(before, 'flow.rc_attitude')
+
+      // The rename has to reach the measurement, otherwise the assertion below
+      // would hold for a reason that has nothing to do with label text.
+      expect(inputsOf(after).get(edgeId)?.metrics.width).not.toBe(
+        inputsOf(before).get(edgeId)?.metrics.width,
+      )
+
+      expect(signatureOf(after)).not.toBe(signatureOf(before))
+    })
+
+    it('节点集合变化就改变签名', () => {
+      const fewer = projectFixture({ level: 2, flows: BASE_FLOWS, omit: ['l2.imu'] })
+      const full = graphAt(2)
+
+      expect(fewer.nodes.length).not.toBe(full.nodes.length)
+      expect(signatureOf(fewer)).not.toBe(signatureOf(full))
+    })
+
+    it('仅 placementRank 变化就改变签名', () => {
+      // Written against the inputs rather than through the projection, because
+      // a verification edit is *not* a clean way to isolate the rank: the
+      // verification mark is measured inside the label box, so editing it
+      // changes the ELK graph as well. Measured: swapping
+      // docs_and_code_confirmed for conflict took the label from 149px to
+      // 141px. The rank half would have been covered twice over, and the test
+      // would have said "the rank matters" while proving nothing of the sort.
+      const graph = graphAt(2)
+      const inputs = inputsOf(graph)
+      const edgeId = edgeForFlow(graph, 'flow.rate_motors')
+
+      const original = inputs.get(edgeId)
+      expect(original).toBeDefined()
+      if (original === undefined) return
+
+      const bumped = new Map(inputs)
+      bumped.set(edgeId, { ...original, placementRank: original.placementRank + 1 })
+
+      expect(layoutInputSignature(graph, bumped)).not.toBe(
+        layoutInputSignature(graph, inputs),
+      )
+    })
   })
 
   it('相同 key 的并发请求只运行一次布局', async () => {

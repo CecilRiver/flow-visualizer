@@ -111,9 +111,12 @@ const FLOW_INITS = [
   { id: 'flow.actuation', from: 'l2.rate', to: 'ext.motors', kind: 'actuation' },
 ] as const
 
-export function fixtureModel(): FlowModelV01 {
-  const flows = FLOW_INITS.map((init) =>
-    makeFlow({
+export function fixtureModel(
+  flowNames: Readonly<Record<string, string>> = {},
+): FlowModelV01 {
+  const flows = FLOW_INITS.map((init) => {
+    const name = flowNames[init.id]
+    return makeFlow({
       id: init.id,
       from: init.from,
       to: init.to,
@@ -121,8 +124,9 @@ export function fixtureModel(): FlowModelV01 {
       data_contract_id: 'contract' in init ? init.contract : 'data.test',
       ...('feedback' in init ? { feedback: init.feedback } : {}),
       ...('verification' in init ? { verification: init.verification } : {}),
-    }),
-  )
+      ...(name === undefined ? {} : { name }),
+    })
+  })
   return makeModel({
     sources: [makeSource('source.test')],
     contracts: CONTRACTS,
@@ -138,8 +142,16 @@ export function fixtureModel(): FlowModelV01 {
   })
 }
 
-export function buildFixtureBundle(): LoadedBundle {
-  const bundle = fixtureModel()
+/**
+ * `flowNames` models an edited file: the same model id, the same scenario, the
+ * same schema version, with different text on a flow. That is exactly the state
+ * a folder rescan leaves behind, and the one a content-blind cache key cannot
+ * tell apart from the original.
+ */
+export function buildFixtureBundle(
+  flowNames: Readonly<Record<string, string>> = {},
+): LoadedBundle {
+  const bundle = fixtureModel(flowNames)
   return {
     id: bundle.model.id,
     relativePath: 'fixtures/synthetic.yaml',
