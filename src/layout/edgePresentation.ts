@@ -1,7 +1,11 @@
 import { FLOW_KIND_LABEL, VERIFICATION_LABEL, labelFor } from '@/domain/labels'
 import type { GraphLevel } from '@/domain/model'
-import type { ProjectedEdge } from '@/domain/view-model'
+import type { ProjectedEdge, ProjectedGraph } from '@/domain/view-model'
+import { severityRank } from '@/projection/verificationRank'
 import { verificationGlyph } from '@/styles/semanticTokens'
+
+import type { EdgeLayoutInput } from './elkLayout'
+import { measureEdgeLabel } from './labelMetrics'
 
 /**
  * What an edge says, derived from the projection without changing it
@@ -82,4 +86,39 @@ export function edgePresentation(input: EdgePresentationInput): EdgePresentation
     verificationMark: verificationGlyph(edge.verification),
     maxLines,
   }
+}
+
+/**
+ * Everything the layout needs to know about each edge's label (10).
+ *
+ * This is the one place where the drawn text and the space reserved for it are
+ * derived together, and that is deliberate: measuring a different string from
+ * the one that gets rendered is how a label comes to be wider than its box, and
+ * a box that is wider than the text pushes the layers further apart than they
+ * need to be.
+ *
+ * The measurement is an estimate from the font metrics in `labelMetrics`, never
+ * a DOM read — see that module for why.
+ */
+export function edgeLayoutInputs(
+  graph: ProjectedGraph,
+  input: { level: GraphLevel; nodeLabel: (id: string) => string | undefined },
+): Map<string, EdgeLayoutInput> {
+  const inputs = new Map<string, EdgeLayoutInput>()
+
+  for (const edge of graph.edges) {
+    const presentation = edgePresentation({ edge, level: input.level, nodeLabel: input.nodeLabel })
+    inputs.set(edge.id, {
+      metrics: measureEdgeLabel({
+        text: presentation.compactText,
+        mark: presentation.verificationMark,
+        maxLines: presentation.maxLines,
+      }),
+      // Lower places first: the most severe verification picks first, because
+      // that is the edge a reader most needs to read.
+      placementRank: severityRank(edge.verification),
+    })
+  }
+
+  return inputs
 }

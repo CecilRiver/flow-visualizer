@@ -10,6 +10,7 @@ import type { Component, GraphLevel, Port } from '@/domain/model'
 import type { ProjectedGraph, ProjectedNode } from '@/domain/view-model'
 import { edgePresentation } from '@/layout/edgePresentation'
 import type { LaidOutEdge, LaidOutNode, LayoutResult } from '@/layout/elkLayout'
+import type { PlacedLabel } from '@/layout/labelPlacement'
 import { sizeForNode } from '@/layout/nodeMetrics'
 import { GROUP_ID_PREFIX } from '@/projection/projectScenario'
 
@@ -293,6 +294,7 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
   }
 
   const routeById = new Map<string, LaidOutEdge>(layout.edges.map((edge) => [edge.id, edge]))
+  const labelByEdgeId = new Map<string, PlacedLabel>(layout.labels.map((label) => [label.edgeId, label]))
   const nodeById = new Map<string, ProjectedNode>()
   for (const node of graph.nodes) nodeById.set(node.id, node)
   for (const group of graph.groups) nodeById.set(group.id, group)
@@ -342,6 +344,11 @@ export function toVueFlowElements(options: ToVueFlowOptions): VueFlowElements {
       bendPoints: route === undefined ? [] : [...route.bendPoints],
       startPoint: route?.startPoint ?? null,
       endPoint: route?.endPoint ?? null,
+      // A label the layout did not place is `null`, never a zero-sized box at
+      // the origin: an origin box would render as a real label in the top-left
+      // corner of the drawing, which is exactly the kind of confident wrong
+      // answer this whole pass exists to remove.
+      labelBox: labelByEdgeId.get(edge.id) ?? null,
       highlighted,
       dimmed: hasSelection && !highlighted,
     }

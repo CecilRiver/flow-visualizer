@@ -2,11 +2,18 @@ import { describe, expect, it } from 'vitest'
 
 import type { GraphLevel } from '@/domain/model'
 import type { ProjectedGraph } from '@/domain/view-model'
-import { LayoutCache, computeElkLayout, layoutCacheKey, layoutGraph } from '@/layout/elkLayout'
+import { edgeLayoutInputs } from '@/layout/edgePresentation'
+import {
+  LayoutCache,
+  computeElkLayout,
+  layoutCacheKey,
+  layoutGraph,
+  toElkGraph,
+} from '@/layout/elkLayout'
 import { assignColumns, computeFallbackLayout } from '@/layout/fallbackLayout'
 import { GROUP_MIN_SIZE, sizeForNode } from '@/layout/nodeMetrics'
 
-import { expectNoOverlaps } from './helpers/geometry'
+import { expectNoOverlaps, overlapArea } from './helpers/geometry'
 import { projectFixture } from './helpers/projectFixture'
 
 function graphAt(level: GraphLevel): ProjectedGraph {
@@ -128,6 +135,250 @@ describe('computeElkLayout', () => {
   })
 })
 
+describe('toElkGraph 交给 ELK 的输入', () => {
+  function inputsFor(graph: ProjectedGraph, level: GraphLevel) {
+    return edgeLayoutInputs(graph, { level, nodeLabel: (id) => id })
+  }
+
+  it('带上标签尺寸的边，ELK 才会为标签留出空间', async () => {
+    const graph = graphAt(2)
+    const inputs = inputsFor(graph, 2)
+    expect(inputs.size).toBe(graph.edges.length)
+
+    const elkGraph = toElkGraph(graph, inputs)
+    for (const edge of elkGraph.edges ?? []) {
+      const label = edge.labels?.[0]
+      expect(label, `${edge.id} 没有带标签`).toBeDefined()
+      // ELK drops a label with a zero width or height without saying so, and the
+      // whole point of declaring it is to make ELK reserve room — so a zero here
+      // is a silent return to the old behaviour rather than a cosmetic problem.
+      expect(label?.width ?? 0).toBeGreaterThan(0)
+      expect(label?.height ?? 0).toBeGreaterThan(0)
+    }
+  })
+
+  it('不给输入时边不带标签，而不是带一个空标签', async () => {
+    const elkGraph = toElkGraph(graphAt(2))
+    for (const edge of elkGraph.edges ?? []) expect(edge.labels).toBeUndefined()
+  })
+
+  it('层间距随最宽标签变化：宽标签把层推得更开', async () => {
+    const narrow = toElkGraph(graphAt(2), new Map())
+    const wide = toElkGraph(
+      graphAt(2),
+      new Map([
+        [
+          'edge.wide',
+          { metrics: { width: 400, height: 30, lines: ['x'], truncated: false }, placementRank: 0 },
+        ],
+      ]),
+    )
+
+    const gapOf = (node: { layoutOptions?: Record<string, string> }): number =>
+      Number(node.layoutOptions?.['elk.layered.spacing.nodeNodeBetweenLayers'] ?? 0)
+
+    expect(gapOf(wide)).toBeGreaterThan(gapOf(narrow))
+  })
+
+  it('读全部 sections，不是只读第一段', async () => {
+    // A route that crosses a container boundary comes back in pieces. Reading
+    // only `sections[0]` drew a line that stopped mid-graph, so the whole route
+    // has to survive into `points`.
+    const result = await computeElkLayout(graphAt(2), inputsFor(graphAt(2), 2))
+    for (const edge of result.edges) {
+      expect(edge.points.length, `${edge.id} 没有路径点`).toBeGreaterThanOrEqual(2)
+      expect(edge.startPoint).toEqual(edge.points[0])
+      expect(edge.endPoint).toEqual(edge.points[edge.points.length - 1])
+      // The bend points are the interior of the route and nothing else.
+      expect(edge.bendPoints).toEqual(edge.points.slice(1, -1))
+    }
+  })
+
+  it('跨容器的边也有路径，而不是退化成一条直线', async () => {
+    // The regression this pins is silent. ELK's default `SEPARATE_CHILDREN`
+    // does not route an edge whose endpoints sit in different containers — the
+    // edge comes back with no sections, the renderer draws a straight line
+    // between the two node centres, and `placeEdgeLabels` finds no route to
+    // anchor a label to. Nothing errors; the graph just looks wrong.
+    //
+    // Measured before the fix on the L2 fixture: 3 of 5 edges unrouted, and all
+    // 3 of them the ones crossing a domain boundary.
+    const graph = graphAt(2)
+    const result = await computeElkLayout(graph, inputsFor(graph, 2))
+
+    const routed = new Set(result.edges.map((edge) => edge.id))
+    const groupIds = new Set(graph.groups.map((group) => group.id))
+    const groupOf = new Map(
+      graph.nodes
+        .filter((node) => node.parentGroupId !== undefined)
+        .map((node) => [node.id, node.parentGroupId as string]),
+    )
+    const crosses = (edge: { source: string; target: string }): boolean => {
+      const from = groupOf.get(edge.source)
+      const to = groupOf.get(edge.target)
+      // An edge with a container on one side and a loose node on the other
+      // crosses just as much as one between two containers.
+      return from !== to
+    }
+
+    const crossingEdges = graph.edges.filter(
+      (edge) => crosses(edge) && !groupIds.has(edge.source) && !groupIds.has(edge.target),
+    )
+    expect(crossingEdges.length, '夹具里没有跨容器的边，这条断言就失去意义').toBeGreaterThan(0)
+
+    const missing = crossingEdges.filter((edge) => !routed.has(edge.id)).map((edge) => edge.id)
+    expect(missing, '跨容器边没有路径').toEqual([])
+  })
+
+  it('每条边都带上了自己的 source/target，供碰撞检查排除端点', async () => {
+    const graph = graphAt(2)
+    const result = await computeElkLayout(graph, inputsFor(graph, 2))
+    const byId = new Map(graph.edges.map((edge) => [edge.id, edge]))
+
+    for (const edge of result.edges) {
+      const projected = byId.get(edge.id)
+      if (projected === undefined) continue
+      expect(edge.source).toBe(projected.source)
+      expect(edge.target).toBe(projected.target)
+    }
+  })
+})
+
+describe('computeElkLayout 的标签放置', () => {
+  it('给了度量就产出对应的标签盒，且盒的左上角是坐标原点之外的位置', async () => {
+    const graph = graphAt(2)
+    const inputs = edgeLayoutInputs(graph, { level: 2, nodeLabel: (id) => id })
+    const result = await computeElkLayout(graph, inputs)
+
+    expect(result.labels.length).toBe(graph.edges.length)
+    for (const label of result.labels) {
+      expect(label.width).toBeGreaterThan(0)
+      expect(label.height).toBeGreaterThan(0)
+      expect(label.lines.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('bounds 覆盖所有节点与标签，而不只是 ELK 报告的形状范围', async () => {
+    const graph = graphAt(2)
+    const inputs = edgeLayoutInputs(graph, { level: 2, nodeLabel: (id) => id })
+    const result = await computeElkLayout(graph, inputs)
+
+    const inside = (box: { x: number; y: number; width: number; height: number }): boolean =>
+      box.x >= result.bounds.x &&
+      box.y >= result.bounds.y &&
+      box.x + box.width <= result.bounds.x + result.bounds.width &&
+      box.y + box.height <= result.bounds.y + result.bounds.height
+
+    for (const node of result.nodes) expect(inside(node), `节点 ${node.id} 在 bounds 之外`).toBe(true)
+    for (const label of result.labels.filter((entry) => entry.visibleByDefault)) {
+      expect(inside(label), `标签 ${label.edgeId} 在 bounds 之外`).toBe(true)
+    }
+    // The margin is what stops a label from being drawn flush against the edge
+    // of the canvas after the first fit.
+    expect(result.bounds.width).toBeGreaterThan(
+      Math.max(...result.nodes.map((node) => node.x + node.width)),
+    )
+  })
+
+  it('标签不与它不连接的节点相交', async () => {
+    const graph = graphAt(2)
+    const inputs = edgeLayoutInputs(graph, { level: 2, nodeLabel: (id) => id })
+    const result = await computeElkLayout(graph, inputs)
+
+    const groupIds = new Set(graph.groups.map((group) => group.id))
+    // Groups are backgrounds, and a label is allowed to cover its own endpoints
+    // (10) — the same two exemptions the e2e measurement applies.
+    const obstacles = result.nodes.filter((node) => !groupIds.has(node.id))
+    const byId = new Map(graph.edges.map((edge) => [edge.id, edge]))
+
+    const defects: string[] = []
+    for (const label of result.labels) {
+      if (!label.visibleByDefault) continue
+      const edge = byId.get(label.edgeId)
+      for (const node of obstacles) {
+        if (node.id === edge?.source || node.id === edge?.target) continue
+        const area = overlapArea(label, node)
+        if (area > 0) defects.push(`${label.edgeId} 压住 ${node.id}（${area.toFixed(0)}px²）`)
+      }
+    }
+
+    expect(defects).toEqual([])
+  })
+
+  it('标签之间互不相交', async () => {
+    const graph = graphAt(2)
+    const inputs = edgeLayoutInputs(graph, { level: 2, nodeLabel: (id) => id })
+    const result = await computeElkLayout(graph, inputs)
+    const visible = result.labels.filter((label) => label.visibleByDefault)
+
+    const defects: string[] = []
+    for (let a = 0; a < visible.length; a += 1) {
+      for (let b = a + 1; b < visible.length; b += 1) {
+        const first = visible[a]
+        const second = visible[b]
+        if (first === undefined || second === undefined) continue
+        const area = overlapArea(first, second)
+        if (area > 0) defects.push(`${first.edgeId} × ${second.edgeId}（${area.toFixed(0)}px²）`)
+      }
+    }
+
+    expect(defects).toEqual([])
+  })
+
+  it('没有任何标签被画在画布之外的左上角', async () => {
+    // A hidden label must not be handed a box at the origin: `toVueFlowElements`
+    // would render it as a real label in the corner of the drawing.
+    const graph = graphAt(2)
+    const inputs = edgeLayoutInputs(graph, { level: 2, nodeLabel: (id) => id })
+    const result = await computeElkLayout(graph, inputs)
+
+    for (const label of result.labels) {
+      if (label.visibleByDefault) continue
+      expect(label.issue).not.toBeNull()
+    }
+  })
+
+  it('两次布局的标签位置完全相同', async () => {
+    const graph = graphAt(2)
+    const inputs = edgeLayoutInputs(graph, { level: 2, nodeLabel: (id) => id })
+
+    const first = await computeElkLayout(graph, inputs)
+    const second = await computeElkLayout(graph, inputs)
+
+    expect(first.labels).toEqual(second.labels)
+    expect(first.bounds).toEqual(second.bounds)
+  })
+})
+
+describe('fallback 与 ELK 的结果形状一致', () => {
+  it('fallback 产出同样的字段，且不放置任何标签', () => {
+    const graph = graphAt(2)
+    const result = computeFallbackLayout(graph)
+
+    expect(result.labels).toEqual([])
+    expect(result.bounds.width).toBeGreaterThan(0)
+    expect(result.bounds.height).toBeGreaterThan(0)
+    for (const edge of result.edges) {
+      expect(edge.source).toBeTruthy()
+      expect(edge.target).toBeTruthy()
+      // No routing is attempted, so there is no path to anchor a label to (14).
+      expect(edge.points).toEqual([])
+    }
+  })
+
+  it('fallback 的 bounds 覆盖所有节点', () => {
+    const graph = graphAt(2)
+    const result = computeFallbackLayout(graph)
+
+    for (const node of result.nodes) {
+      expect(node.x).toBeGreaterThanOrEqual(result.bounds.x)
+      expect(node.y).toBeGreaterThanOrEqual(result.bounds.y)
+      expect(node.x + node.width).toBeLessThanOrEqual(result.bounds.x + result.bounds.width)
+      expect(node.y + node.height).toBeLessThanOrEqual(result.bounds.y + result.bounds.height)
+    }
+  })
+})
+
 describe('LayoutCache', () => {
   it('超过上限时淘汰最久未使用的结果', () => {
     const cache = new LayoutCache(2)
@@ -183,8 +434,8 @@ describe('LayoutCache', () => {
     const graph = graphAt(0)
 
     // `layoutGraph` shares the in-flight promise, so two calls overlap.
-    const first = layoutGraph('key', graph, cache)
-    const second = layoutGraph('key', graph, cache)
+    const first = layoutGraph('key', graph, new Map(), cache)
+    const second = layoutGraph('key', graph, new Map(), cache)
     expect(second).toBe(first)
 
     const [a, b] = await Promise.all([first, second])

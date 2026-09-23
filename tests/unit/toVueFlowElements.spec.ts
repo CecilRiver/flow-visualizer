@@ -650,6 +650,8 @@ describe('toVueFlowElements — 嵌套坐标与尺寸', () => {
         { id: 'l2.attitude', x: 140, y: 98, width: 240, height: 124 },
       ],
       edges: [],
+      labels: [],
+      bounds: { x: 0, y: 0, width: 600, height: 400 },
       width: 600,
       height: 400,
     }
@@ -702,6 +704,8 @@ describe('toVueFlowElements — 嵌套坐标与尺寸', () => {
         { id: 'ext.rc', x: 0, y: 0, width: 0, height: 0 },
       ],
       edges: [],
+      labels: [],
+      bounds: { x: 0, y: 0, width: 0, height: 0 },
       width: 0,
       height: 0,
     }

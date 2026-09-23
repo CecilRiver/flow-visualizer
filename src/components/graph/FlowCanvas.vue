@@ -12,7 +12,7 @@ import {
   type NodeTypesObject,
 } from '@vue-flow/core'
 import { MiniMap } from '@vue-flow/minimap'
-import { computed, markRaw, onBeforeUnmount, onMounted } from 'vue'
+import { computed, markRaw, onBeforeUnmount, onMounted, watch } from 'vue'
 
 import { EDGE_TYPE } from '@/adapters/vueFlow/edgeTypes'
 import { NODE_TYPE } from '@/adapters/vueFlow/nodeTypes'
@@ -22,6 +22,7 @@ import {
   selectionForNode,
   useGraphController,
 } from '@/composables/useGraphController'
+import { GRAPH_READABILITY } from '@/layout/readabilityOptions'
 import { NODE_SURFACE, verificationTokenNameOf } from '@/styles/semanticTokens'
 
 import BusinessComponentNode from './BusinessComponentNode.vue'
@@ -54,7 +55,7 @@ const controller = useGraphController()
  */
 const FLOW_ID = 'flow-canvas'
 
-const { viewport } = useVueFlow(FLOW_ID)
+const { viewport, fitBounds } = useVueFlow(FLOW_ID)
 
 /*
  * The band, not the zoom factor. Edges read this to decide whether their labels
@@ -123,6 +124,77 @@ function minimapNodeColor(node: { type?: string; data?: unknown }): string {
   }
   return NODE_SURFACE.groupSurface
 }
+
+/**
+ * Token guarding the fit against a layout that has already been replaced.
+ *
+ * `fitBounds` resolves asynchronously, and a level switch can land a new layout
+ * while the previous fit is still in flight. Without this, the older fit would
+ * apply second and win, leaving the reader looking at the right graph framed
+ * for the wrong one.
+ */
+let fitToken = 0
+
+/**
+ * The fit's padding, in pixels.
+ *
+ * Note the unit. Vue Flow's `PaddingWithUnit` accepts a bare `number`, and a
+ * bare number is read as a *fraction* of the viewport — `{ top: 40 }` means 40%,
+ * not 40px — so the suffix is the difference between a four-pixel gutter and a
+ * drawing squeezed into the middle third of the canvas.
+ */
+const FIT_PADDING = {
+  top: `${GRAPH_READABILITY.viewport.topPadding}px`,
+  right: `${GRAPH_READABILITY.viewport.rightPadding}px`,
+  bottom: `${GRAPH_READABILITY.viewport.bottomPadding}px`,
+  left: `${GRAPH_READABILITY.viewport.leftPadding}px`,
+} as const
+
+/**
+ * Frames the drawing on the layout's own extent (GRAPH_READABILITY_DESIGN.md 11).
+ *
+ * Three things this deliberately is not:
+ *
+ * - **Not `fit-view-on-init`.** That prop fits the *shapes* Vue Flow knows
+ *   about, and the labels are HTML outside the SVG, so a label past the right
+ *   edge of the last node was outside the fitted area and got clipped. It also
+ *   fires exactly once — the library guards it with an internal "already done"
+ *   flag — so switching level left the viewport framed for the previous graph.
+ * - **Not `fitView()`.** That reads the rendered nodes back out of the DOM,
+ *   which would make the viewport depend on what happens to be mounted.
+ *   `fitBounds` takes the box directly, so the fit is a function of the layout.
+ * - **Not triggered by anything but the layout.** Inspector toggles, the
+ *   sidebar, hover, selection and the zoom bucket all re-render this component,
+ *   and re-framing on any of them would yank the viewport out from under a
+ *   reader who had just panned somewhere deliberately. Watching the layout
+ *   result's identity is what keeps the trigger narrow: it is replaced only by a
+ *   new layout.
+ *
+ * `padding` takes unit strings. Bare numbers are read as *fractions* of the
+ * viewport, so `{ top: 40 }` would mean 40% — the paddings come from the shared
+ * viewport constants and are formatted here for exactly that reason.
+ */
+watch(
+  () => controller.layout.value,
+  (layout) => {
+    if (layout === null) return
+    // An empty graph has nothing to frame, and fitting a zero box would zoom the
+    // canvas to its maximum on a blank surface.
+    if (layout.bounds.width <= 0 || layout.bounds.height <= 0) return
+
+    const token = ++fitToken
+    void fitBounds(layout.bounds, {
+      padding: FIT_PADDING,
+      // No animation: a fit that eases in reads as the graph moving on its own.
+      duration: 0,
+    }).then(() => {
+      if (token !== fitToken) return
+    })
+  },
+  // The first layout is applied before this component's own render, so the
+  // immediate call is what frames the initial view.
+  { immediate: true },
+)
 
 /** Selecting by projected id, so click and keyboard share one path. */
 function selectNodeById(id: string): void {
@@ -233,7 +305,6 @@ onBeforeUnmount(() => {
       :edges-updatable="false"
       :min-zoom="0.15"
       :max-zoom="2.5"
-      :fit-view-on-init="true"
       :zoom-on-double-click="false"
       class="flow-canvas__surface"
       @node-click="onNodeClick"

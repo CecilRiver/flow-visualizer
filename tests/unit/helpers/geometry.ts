@@ -39,6 +39,21 @@ export function intersects(first: Box, second: Box): boolean {
   )
 }
 
+/**
+ * The area two boxes share, or 0 when they are disjoint.
+ *
+ * `intersects` answers yes or no, which is what a layout assertion wants. A
+ * label check wants the size as well: a half-pixel graze from antialiasing and
+ * a label sitting squarely on a node are the same answer to `intersects`, and
+ * only one of them is a defect worth reporting.
+ */
+export function overlapArea(first: Box, second: Box): number {
+  const width = Math.min(first.x + first.width, second.x + second.width) - Math.max(first.x, second.x)
+  const height =
+    Math.min(first.y + first.height, second.y + second.height) - Math.max(first.y, second.y)
+  return width > 0 && height > 0 ? width * height : 0
+}
+
 /** A pair of boxes found to share area, in the order they were given. */
 export type BoxPair<T> = readonly [T, T]
 

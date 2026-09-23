@@ -40,7 +40,31 @@ const zoomBucket = useZoomBucket()
  * design document asks for the edge to stay clickable and focusable with only
  * the inline text gone (5.3).
  */
-const labelVisible = computed(() => zoomBucket.value !== 'hidden')
+const labelVisible = computed(
+  () =>
+    zoomBucket.value !== 'hidden' &&
+    props.data.labelBox !== null &&
+    props.data.labelBox.visibleByDefault,
+)
+
+/**
+ * The verification mark is drawn only at detail zoom (5.3).
+ *
+ * Its width is reserved in every bucket regardless. `measureEdgeLabel` measures
+ * the text and the mark as one box, so the space is always there — which is what
+ * lets the mark appear on zoom without the label changing size, and therefore
+ * without a re-layout. Reserving it only in the detail bucket would mean the box
+ * grew when the reader zoomed in, which is the one thing 5.3 forbids.
+ */
+const markVisible = computed(() => zoomBucket.value === 'detail')
+
+/** `…` when the text did not fit, so the reader knows the name is cut short. */
+const lines = computed(() => {
+  const box = props.data.labelBox
+  if (box === null) return []
+  if (!box.truncated) return [...box.lines]
+  return box.lines.map((line, index) => (index === box.lines.length - 1 ? `${line}…` : line))
+})
 
 /**
  * Route through ELK's bend points when it produced one; otherwise a straight
@@ -60,48 +84,43 @@ const path = computed(() => {
   return segments.join(' ')
 })
 
-/**
- * Midpoint of the route, used to park the label away from the arrowheads.
- *
- * Still a local guess. The layout takes this over in R2, which is why the
- * label's own width is not consulted here.
- */
-const labelPosition = computed(() => {
-  const points = props.data.bendPoints
-  if (points.length === 0) {
-    return {
-      x: (props.sourceX + props.targetX) / 2,
-      y: (props.sourceY + props.targetY) / 2,
-    }
-  }
-  const middle = points[Math.floor(points.length / 2)]
-  return middle === undefined
-    ? { x: (props.sourceX + props.targetX) / 2, y: (props.sourceY + props.targetY) / 2 }
-    : { x: middle.x, y: middle.y }
-})
-
 const strokeDash = computed(() =>
   style.value.dashArray === '' ? undefined : style.value.dashArray,
 )
 
 /**
- * The label's own measurements, taken from the shared constants.
+ * The label's box, exactly as the layout measured it (6.2, 10).
  *
- * Bound rather than written into the style block below: the same numbers size
- * the box the layout reserves, so a value that lived only in CSS could drift
- * away from the space actually allocated for it (6.1).
+ * `x`/`y` are the top-left corner in graph coordinates — the same space Vue
+ * Flow's node positions live in, since `EdgeLabelRenderer` teleports the label
+ * inside the already-transformed viewport. So they are used directly, and the
+ * old `translate(-50%, -50%)` is gone: it centred the box on a point chosen
+ * for its midpoint, which is not the same thing as the box the collisions were
+ * checked against.
+ *
+ * Width and height are pinned to the measured values rather than left to the
+ * content. The browser's own layout would be a second opinion about how big the
+ * label is, and the overlap check only ever consulted the first one.
+ *
+ * The numbers come from `GRAPH_READABILITY` rather than from the style block
+ * below, because the same numbers size the box the layout reserves — a value
+ * that lived only in CSS could drift away from the space actually allocated.
  */
-const labelStyle = computed(() => ({
-  transform: `translate(-50%, -50%) translate(${labelPosition.value.x}px, ${labelPosition.value.y}px)`,
-  '--edge-color': style.value.color,
-  '--label-max-width': `${
-    presentation.value.maxLines === 2
-      ? GRAPH_READABILITY.label.detailMaxWidth
-      : GRAPH_READABILITY.label.compactMaxWidth
-  }px`,
-  '--label-font-size': `${GRAPH_READABILITY.label.fontSize}px`,
-  '--label-line-height': `${GRAPH_READABILITY.label.lineHeight}px`,
-}))
+const labelStyle = computed(() => {
+  const box = props.data.labelBox
+  return {
+    left: `${String(box?.x ?? 0)}px`,
+    top: `${String(box?.y ?? 0)}px`,
+    width: `${String(box?.width ?? 0)}px`,
+    height: `${String(box?.height ?? 0)}px`,
+    '--edge-color': style.value.color,
+    '--label-padding-x': `${String(GRAPH_READABILITY.label.horizontalPadding)}px`,
+    '--label-padding-y': `${String(GRAPH_READABILITY.label.verticalPadding)}px`,
+    '--label-gap': `${String(GRAPH_READABILITY.label.iconGap)}px`,
+    '--label-font-size': `${String(GRAPH_READABILITY.label.fontSize)}px`,
+    '--label-line-height': `${String(GRAPH_READABILITY.label.lineHeight)}px`,
+  }
+})
 
 /** The mark carries the verification colour, the letter carries its meaning. */
 const markStyle = computed(() => ({
@@ -149,17 +168,24 @@ const markStyle = computed(() => ({
       :data-edge-id="id"
       :data-source="source"
       :data-target="target"
-      :class="{
-        'is-dimmed': data.dimmed,
-        'is-multiline': presentation.maxLines === 2,
-      }"
+      :data-truncated="data.labelBox?.truncated === true ? 'true' : 'false'"
+      :class="{ 'is-dimmed': data.dimmed }"
       :style="labelStyle"
     >
+      <!--
+        One span per line, from the measurement. Letting the browser wrap this
+        instead would produce its own line count, and the box it wrapped into is
+        one the collision check never saw.
+      -->
+      <span class="semantic-edge__kind">
+        <span
+          v-for="(line, index) in lines"
+          :key="index"
+          class="semantic-edge__line-text"
+        >{{ line }}</span>
+      </span>
       <span
-        class="semantic-edge__kind"
-        :class="{ 'u-clamp-2': presentation.maxLines === 2 }"
-      >{{ presentation.compactText }}</span>
-      <span
+        v-if="markVisible && presentation.verificationMark !== ''"
         class="semantic-edge__mark"
         :style="markStyle"
       >{{ presentation.verificationMark }}</span>
@@ -189,11 +215,24 @@ const markStyle = computed(() => ({
 
 .semantic-edge__label {
   position: absolute;
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: var(--space-1);
-  padding: 1px var(--space-2);
-  max-width: var(--label-max-width, 112px);
+  gap: var(--label-gap, 4px);
+  /*
+   * Every one of these has a counterpart in `measureEdgeLabel`, and they have to
+   * agree to the pixel: the layout reserved `width` × `height` and checked that
+   * box against the nodes and the other labels, so a box that renders even a
+   * little larger is a box whose collisions were never checked.
+   *
+   *   border-box     the declared width includes the border and the padding,
+   *                  which is how `measureEdgeLabel` computes it too
+   *   border         1px per side
+   *   padding        3px vertical, 8px horizontal — per side, not the sum
+   *   line-height    one line is exactly this tall
+   */
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: var(--label-padding-y, 3px) var(--label-padding-x, 8px);
   background: var(--surface-panel);
   border: 1px solid var(--edge-color, var(--border-subtle));
   border-radius: var(--radius-pill);
@@ -220,26 +259,37 @@ const markStyle = computed(() => ({
   opacity: var(--graph-dimmed-opacity);
 }
 
+/*
+ * The lines stack because they are blocks, which is what makes `lines.length ×
+ * line-height` the real height — the same arithmetic `measureEdgeLabel` did.
+ */
 .semantic-edge__kind {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   color: var(--edge-color, var(--text-primary));
-  white-space: nowrap;
 }
 
-/* A two-line label is allowed to wrap where the one-line form is not. */
-.semantic-edge__label.is-multiline .semantic-edge__kind {
-  white-space: normal;
-  overflow-wrap: anywhere;
+.semantic-edge__line-text {
+  display: block;
+  white-space: pre;
 }
 
 /*
  * The mark states a verification state in one or two characters, so it never
  * carries the meaning alone: the legend, the node badges and this edge's own
  * accessible name all spell the state out.
+ *
+ * `margin-left: auto` pins it to the right edge of the box rather than letting
+ * it sit against the text. The box reserves a fixed width for the mark, so a
+ * short name would otherwise leave the mark floating in the middle of the label
+ * with the reserved space trailing after it.
  */
 .semantic-edge__mark {
   flex: none;
+  margin-left: auto;
   border-left: 1px solid var(--border-subtle);
-  padding-left: var(--space-1);
+  padding-left: var(--label-gap, 4px);
   font-variant-numeric: tabular-nums;
 }
 </style>

@@ -1,6 +1,6 @@
 import type { ProjectedGraph } from '@/domain/view-model'
 
-import type { LaidOutEdge, LaidOutNode, LayoutResult } from './elkLayout'
+import { withLabels, type LaidOutEdge, type LaidOutNode, type LayoutResult } from './elkLayout'
 import { GROUP_PADDING, GROUP_MIN_SIZE, sizeForNode } from './nodeMetrics'
 
 /**
@@ -250,14 +250,32 @@ export function computeFallbackLayout(graph: ProjectedGraph): LayoutResult {
   const width = nodes.reduce((max, node) => Math.max(max, node.x + node.width), 0) + MARGIN
   const height = nodes.reduce((max, node) => Math.max(max, node.y + node.height), 0) + MARGIN
 
-  // No routing is attempted: `SemanticFlowEdge` falls back to Vue Flow's own
-  // smooth-step path when an edge carries no bend points (DESIGN.md 10.5).
+  // No routing is attempted here. `SemanticFlowEdge` draws the line from Vue
+  // Flow's own `sourceX`/`sourceY`/`targetX`/`targetY`, which Vue Flow computes
+  // from the node boxes above; the route fields below are therefore empty, and
+  // this layout's `points` must not be read as a path.
+  //
+  // The zeros are a placeholder, not an origin. Anything that starts consuming
+  // `startPoint`/`endPoint` as geometry will silently draw every edge out of the
+  // top-left corner — so a caller wanting real endpoints has to take them from
+  // Vue Flow, and giving the fallback real routing is a separate piece of work.
   const edges: LaidOutEdge[] = graph.edges.map((edge) => ({
     id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    points: [],
     startPoint: { x: 0, y: 0 },
     endPoint: { x: 0, y: 0 },
     bendPoints: [],
   }))
 
-  return { nodes, edges, width, height }
+  // Labels are not placed, and none are marked visible (DESIGN.md 14). Label
+  // geometry is derived from a route, and there are none: emitting boxes here
+  // would mean inventing coordinates for lines that were never drawn. The
+  // reader loses the inline text but keeps every node, and the edge data still
+  // carries the presentation text for the Inspector — which is the honest
+  // outcome. A degraded layout must not look like a finished one.
+  const { labels, bounds } = withLabels(graph, nodes, edges, new Map(), false)
+
+  return { nodes, edges, labels, bounds, width, height }
 }

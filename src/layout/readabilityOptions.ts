@@ -16,9 +16,17 @@ export const GRAPH_READABILITY = {
     compactMaxWidth: 112,
     /** Longest a line of an L2 flow-name label may be. */
     detailMaxWidth: 176,
-    /** Horizontal padding inside the label box, both sides together. */
+    /**
+     * Padding inside the label box, per side.
+     *
+     * Per side, not for both sides together: the stylesheet binding these is a
+     * plain `padding`, and a constant that meant the sum would have to be
+     * halved at one of the two ends — which is exactly the kind of quiet
+     * disagreement that makes the drawn label a different width from the box
+     * ELK reserved for it (6.2).
+     */
     horizontalPadding: 8,
-    /** Vertical padding inside the label box, top and bottom together. */
+    /** Padding inside the label box, per side. See `horizontalPadding`. */
     verticalPadding: 3,
     /** Space between the verification mark and the text that follows it. */
     iconGap: 4,

@@ -87,6 +87,9 @@ describe('edgeTypes', () => {
     bendPoints: [],
     startPoint: null,
     endPoint: null,
+    // No layout ran, so no label was placed. A fixture that invented a box here
+    // would be asserting on geometry this file has no interest in.
+    labelBox: null,
     highlighted: false,
     dimmed: false,
   }

@@ -1,9 +1,18 @@
-import type { ElkExtendedEdge, ElkNode, ElkPoint, ELK as ElkInstance } from 'elkjs/lib/elk-api'
+import type {
+  ElkEdgeSection,
+  ElkExtendedEdge,
+  ElkNode,
+  ElkPoint,
+  ELK as ElkInstance,
+} from 'elkjs/lib/elk-api'
 
 import type { ProjectedGraph } from '@/domain/view-model'
 
-import { GROUP_LAYOUT_OPTIONS, ROOT_LAYOUT_OPTIONS } from './elkOptions'
-import { GROUP_PADDING, GROUP_MIN_SIZE, sizeForNode } from './nodeMetrics'
+import { groupLayoutOptions, rootLayoutOptions } from './elkOptions'
+import type { EdgeLabelMetrics } from './labelMetrics'
+import { placeEdgeLabels, type PlacedLabel } from './labelPlacement'
+import { layoutBounds, shapeBounds, type Box } from './layoutBounds'
+import { GROUP_MIN_SIZE, sizeForNode } from './nodeMetrics'
 
 export interface LaidOutNode {
   id: string
@@ -15,6 +24,10 @@ export interface LaidOutNode {
 
 export interface LaidOutEdge {
   id: string
+  source: string
+  target: string
+  /** The whole route in absolute coordinates: start, bend points, end. */
+  points: readonly ElkPoint[]
   /** Orthogonal bend points from ELK, in absolute coordinates. */
   bendPoints: readonly ElkPoint[]
   startPoint: ElkPoint
@@ -24,8 +37,25 @@ export interface LaidOutEdge {
 export interface LayoutResult {
   nodes: readonly LaidOutNode[]
   edges: readonly LaidOutEdge[]
+  /** Where each label goes, and whether it is drawn at all. */
+  labels: readonly PlacedLabel[]
+  /** What the initial fit has to cover (11). */
+  bounds: Box
   width: number
   height: number
+}
+
+/**
+ * What the layout needs to know about one edge's label.
+ *
+ * Deliberately not the label's *text*: the layout has no business knowing what
+ * an edge says. It needs the box to reserve room for and the priority to place
+ * it in, both of which the caller derives from the projection.
+ */
+export interface EdgeLayoutInput {
+  metrics: EdgeLabelMetrics
+  /** Lower places first; see `comparePlacementPriority`. */
+  placementRank: number
 }
 
 type ElkConstructor = new () => ElkInstance
@@ -50,15 +80,31 @@ function getElk(): Promise<ElkInstance> {
   return elkPromise
 }
 
+/** The widest label ELK has to leave room for; drives the layer gap. */
+function widestLabel(edgeInputs: ReadonlyMap<string, EdgeLayoutInput>): number {
+  let widest = 0
+  for (const input of edgeInputs.values()) widest = Math.max(widest, input.metrics.width)
+  return widest
+}
+
 /**
  * Turns a projected graph into an ELK hierarchy (DESIGN.md 10.1).
  *
  * Exported for tests: the graph handed to ELK is the part worth asserting on,
  * because a mistake here (a child missing its container, or a dangling edge
  * reference) surfaces as a layout exception rather than a wrong picture.
+ *
+ * The labels matter as much as the nodes. ELK routes around whatever it is told
+ * about, so an edge declared without its label is an edge ELK believes is
+ * narrower than it is — which is exactly how a label came to be drawn on top of
+ * the node in the following layer.
  */
-export function toElkGraph(graph: ProjectedGraph): ElkNode {
+export function toElkGraph(
+  graph: ProjectedGraph,
+  edgeInputs: ReadonlyMap<string, EdgeLayoutInput> = new Map(),
+): ElkNode {
   const groupIds = new Set(graph.groups.map((group) => group.id))
+  const maxLabelWidth = widestLabel(edgeInputs)
 
   const childNodes: ElkNode[] = graph.nodes.map((node) => {
     const size = sizeForNode(node)
@@ -87,7 +133,7 @@ export function toElkGraph(graph: ProjectedGraph): ElkNode {
     const children = childrenByGroup.get(group.id) ?? []
     return {
       id: group.id,
-      layoutOptions: GROUP_LAYOUT_OPTIONS,
+      layoutOptions: groupLayoutOptions(maxLabelWidth),
       width: GROUP_MIN_SIZE.width,
       height: GROUP_MIN_SIZE.height,
       children,
@@ -96,22 +142,53 @@ export function toElkGraph(graph: ProjectedGraph): ElkNode {
 
   // Aggregated edges are declared at the root even when their endpoints live
   // inside a container; ELK routes them across the hierarchy.
-  const edges: ElkExtendedEdge[] = graph.edges.map((edge) => ({
-    id: edge.id,
-    sources: [edge.source],
-    targets: [edge.target],
-  }))
+  const edges: ElkExtendedEdge[] = graph.edges.map((edge) => {
+    const elkEdge: ElkExtendedEdge = {
+      id: edge.id,
+      sources: [edge.source],
+      targets: [edge.target],
+    }
+
+    const input = edgeInputs.get(edge.id)
+    if (input !== undefined) {
+      // A zero width or height is dropped by ELK without a word, and a negative
+      // one is clamped to nothing — so the box is floored at 1 rather than
+      // trusted. `measureEdgeLabel` never produces zero, but this is the line
+      // where a silent mistake would cost the whole reservation.
+      elkEdge.labels = [
+        {
+          id: `${edge.id}__label`,
+          // ELK does not measure text; the string is here so a failed layout
+          // can be read back. The box below is the only thing it acts on.
+          text: input.metrics.lines.join(' '),
+          width: Math.max(1, input.metrics.width),
+          height: Math.max(1, input.metrics.height),
+        },
+      ]
+    }
+
+    return elkEdge
+  })
 
   return {
     id: 'root',
-    layoutOptions: ROOT_LAYOUT_OPTIONS,
+    layoutOptions: rootLayoutOptions(maxLabelWidth),
     children: [...containers, ...orphaned],
     edges,
   }
 }
 
-function pointOf(point: ElkPoint | undefined): ElkPoint {
-  return { x: point?.x ?? 0, y: point?.y ?? 0 }
+function pointOf(point: ElkPoint | undefined, offsetX = 0, offsetY = 0): ElkPoint {
+  return { x: offsetX + (point?.x ?? 0), y: offsetY + (point?.y ?? 0) }
+}
+
+/** Every point of one section, in order, shifted into root coordinates. */
+function sectionPoints(section: ElkEdgeSection, offsetX: number, offsetY: number): ElkPoint[] {
+  return [
+    pointOf(section.startPoint, offsetX, offsetY),
+    ...(section.bendPoints ?? []).map((point) => pointOf(point, offsetX, offsetY)),
+    pointOf(section.endPoint, offsetX, offsetY),
+  ]
 }
 
 /** Flattens ELK's hierarchy back into absolute node boxes (DESIGN.md 10.5). */
@@ -135,18 +212,59 @@ function collectNodes(
   }
 }
 
-function collectEdges(node: ElkNode, into: LaidOutEdge[]): void {
+/**
+ * Collects edge routes, shifted into root coordinates.
+ *
+ * Two things the previous version got wrong. All of `sections` are read, not
+ * just the first: an edge that crosses a container boundary comes back as
+ * several sections, and using only the first drew a line that stopped
+ * mid-graph. And the parent offset is accumulated, the same way it is for
+ * nodes — without it a route inside a container was offset by the container's
+ * own position twice, or not at all.
+ */
+function collectEdges(
+  node: ElkNode,
+  offsetX: number,
+  offsetY: number,
+  edgesById: ReadonlyMap<string, { source: string; target: string }>,
+  into: LaidOutEdge[],
+): void {
   for (const edge of node.edges ?? []) {
-    const section = edge.sections?.[0]
-    if (section === undefined) continue
+    const sections = edge.sections ?? []
+    if (sections.length === 0) continue
+
+    const points: ElkPoint[] = []
+    for (const section of sections) {
+      const sectionRoute = sectionPoints(section, offsetX, offsetY)
+      // A section starts where the previous one ended; keeping both would leave
+      // a zero-length segment in the polyline.
+      const first = sectionRoute[0]
+      const last = points[points.length - 1]
+      const start = first !== undefined && last !== undefined && first.x === last.x && first.y === last.y
+        ? sectionRoute.slice(1)
+        : sectionRoute
+      points.push(...start)
+    }
+
+    const start = points[0]
+    const end = points[points.length - 1]
+    if (start === undefined || end === undefined) continue
+
+    const endpoints = edgesById.get(edge.id)
     into.push({
       id: edge.id,
-      startPoint: pointOf(section.startPoint),
-      endPoint: pointOf(section.endPoint),
-      bendPoints: (section.bendPoints ?? []).map(pointOf),
+      source: endpoints?.source ?? '',
+      target: endpoints?.target ?? '',
+      points,
+      bendPoints: points.slice(1, -1),
+      startPoint: start,
+      endPoint: end,
     })
   }
-  for (const child of node.children ?? []) collectEdges(child, into)
+
+  for (const child of node.children ?? []) {
+    collectEdges(child, offsetX + (child.x ?? 0), offsetY + (child.y ?? 0), edgesById, into)
+  }
 }
 
 /**
@@ -155,22 +273,81 @@ function collectEdges(node: ElkNode, into: LaidOutEdge[]): void {
  * Throws when ELK cannot lay the graph out; `useGraphController` catches that
  * and falls back to `fallbackLayout` (DESIGN.md 10.4).
  */
-export async function computeElkLayout(graph: ProjectedGraph): Promise<LayoutResult> {
+export async function computeElkLayout(
+  graph: ProjectedGraph,
+  edgeInputs: ReadonlyMap<string, EdgeLayoutInput> = new Map(),
+): Promise<LayoutResult> {
   const elk = await getElk()
-  const laidOut = await elk.layout(toElkGraph(graph))
+  const laidOut = await elk.layout(toElkGraph(graph, edgeInputs))
 
   const nodes: LaidOutNode[] = []
   collectNodes(laidOut, laidOut.x ?? 0, laidOut.y ?? 0, nodes)
 
+  const endpoints = new Map(graph.edges.map((edge) => [edge.id, { source: edge.source, target: edge.target }]))
   const edges: LaidOutEdge[] = []
-  collectEdges(laidOut, edges)
+  collectEdges(laidOut, laidOut.x ?? 0, laidOut.y ?? 0, endpoints, edges)
 
   return {
     nodes,
     edges,
     width: laidOut.width ?? 0,
     height: laidOut.height ?? 0,
+    ...withLabels(graph, nodes, edges, edgeInputs),
   }
+}
+
+/**
+ * Places the labels and derives the extent everything has to fit into.
+ *
+ * Shared with the fallback layout: both produce the same `LayoutResult` shape,
+ * and a caller must not be able to tell which one ran from the fields alone.
+ */
+export function withLabels(
+  graph: ProjectedGraph,
+  nodes: readonly LaidOutNode[],
+  edges: readonly LaidOutEdge[],
+  edgeInputs: ReadonlyMap<string, EdgeLayoutInput>,
+  /** Suppresses inline labels entirely; the fallback uses this (14). */
+  allowLabels = true,
+): { labels: PlacedLabel[]; bounds: Box } {
+  const groupIds = new Set(graph.groups.map((group) => group.id))
+  const pointsByEdge = new Map(edges.map((edge) => [edge.id, edge.points]))
+
+  const labels = allowLabels
+    ? placeEdgeLabels({
+        // A container is a background, not an obstacle: a label over a domain
+        // group still reads, and treating the group as solid would silence
+        // every label in the busiest part of the drawing.
+        nodes: nodes
+          .filter((node) => !groupIds.has(node.id))
+          .map((node) => ({ id: node.id, x: node.x, y: node.y, width: node.width, height: node.height })),
+        edges: graph.edges.flatMap((edge, index) => {
+          const input = edgeInputs.get(edge.id)
+          const points = pointsByEdge.get(edge.id)
+          if (input === undefined || points === undefined) return []
+          return [
+            {
+              id: edge.id,
+              source: edge.source,
+              target: edge.target,
+              points,
+              verificationRank: input.placementRank,
+              feedback: edge.feedback,
+              sourceOrder: index,
+            },
+          ]
+        }),
+        metrics: new Map([...edgeInputs].map(([id, input]) => [id, input.metrics])),
+      })
+    : []
+
+  const drawn = labels.filter((label) => label.visibleByDefault)
+  const shape = shapeBounds(
+    nodes,
+    edges.map((edge) => edge.points),
+  )
+
+  return { labels, bounds: layoutBounds(shape, drawn) }
 }
 
 /** Cache key inputs (DESIGN.md 10.3): everything that changes the coordinates. */
@@ -183,8 +360,20 @@ export interface LayoutCacheKey {
   verificationStates: readonly string[]
 }
 
+/**
+ * Bumped whenever a change to this module would produce different coordinates
+ * for the same inputs (13.2).
+ *
+ * The key below names the graph, not the code that lays it out. Without this,
+ * a cache populated before a layout change would keep serving the old geometry
+ * for as long as the reader stayed on the same scenario — and the symptom
+ * (stale coordinates, correct everything else) is close to impossible to read.
+ */
+export const LAYOUT_SIGNATURE = 'layout-v2-labels'
+
 export function layoutCacheKey(key: LayoutCacheKey): string {
   return [
+    LAYOUT_SIGNATURE,
     key.bundleId,
     key.revision,
     key.scenarioId,
@@ -244,6 +433,7 @@ const pending = new Map<string, Promise<LayoutResult>>()
 export function layoutGraph(
   key: string,
   graph: ProjectedGraph,
+  edgeInputs: ReadonlyMap<string, EdgeLayoutInput>,
   cache: LayoutCache,
 ): Promise<LayoutResult> {
   const cached = cache.get(key)
@@ -252,7 +442,7 @@ export function layoutGraph(
   const inFlight = pending.get(key)
   if (inFlight !== undefined) return inFlight
 
-  const request = computeElkLayout(graph)
+  const request = computeElkLayout(graph, edgeInputs)
     .then((result) => {
       cache.set(key, result)
       return result
@@ -264,6 +454,3 @@ export function layoutGraph(
   pending.set(key, request)
   return request
 }
-
-/** Padding re-exported so the group rendering matches what ELK reserved. */
-export { GROUP_PADDING }
